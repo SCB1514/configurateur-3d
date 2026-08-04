@@ -59,4 +59,5 @@ jobs:
         uses: actions/deploy-pages@v4
 
       - name: Adresse publiee
-        run: echo "Configurateur en ligne : ${{ steps.deploiement.outputs.page_url }}"
+        run: |
+          echo "Configurateur en ligne : ${{ steps.deploiement.outputs.page_url }}"
