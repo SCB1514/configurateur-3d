@@ -45,11 +45,12 @@ jobs:
           echo "Fichiers publies :"
           find _site -type f | sed 's|^_site/||' | sort
 
+      # Prealable, a faire UNE FOIS dans le depot :
+      #   Settings -> Pages -> Build and deployment -> Source : GitHub Actions
+      # (le jeton automatique d'Actions n'a pas le droit de creer le site
+      #  lui-meme : l'option « enablement » echoue en « Resource not
+      #  accessible by integration ».)
       - uses: actions/configure-pages@v5
-        with:
-          # active GitHub Pages (source « GitHub Actions ») au premier passage,
-          # ce qui evite d'aller le regler a la main dans les parametres
-          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
