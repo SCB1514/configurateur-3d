@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Configurateur 3D</title>
+
+<!-- ============================================================
+     Périmètre réseau de l'application, appliqué par le navigateur.
+     connect-src : le site lui-même + l'API Google Drive, rien d'autre.
+     Aucun CDN, aucun script tiers, aucun traceur ne peut être chargé,
+     et aucune donnée ne peut être envoyée ailleurs.
+     ============================================================ -->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'self';
+  style-src 'self' 'unsafe-inline';
+  img-src 'self' data: blob:;
+  font-src 'self';
+  connect-src 'self' https://www.googleapis.com;
+  media-src 'self';
+  object-src 'none';
+  base-uri 'none';
+  form-action 'none';
+" />
+
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ══════════ CATALOGUE ══════════ -->
+  <aside id="catalog" class="panel">
+    <header class="panel-head">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <div>
+          <strong id="lib-name">Bibliothèque</strong>
+          <small id="lib-sub">chargement…</small>
+        </div>
+      </div>
+      <button class="icon-btn only-mobile" id="btn-close-catalog" title="Fermer">✕</button>
+    </header>
+
+    <div class="search-row" id="lib-switch-row" hidden>
+      <select id="lib-switch" title="Bibliothèque du dossier"></select>
+    </div>
+
+    <div class="search-row">
+      <input type="search" id="search" placeholder="Rechercher un bloc…" autocomplete="off" />
+    </div>
+    <div class="chips" id="categories"></div>
+
+    <div id="compat-bar" class="compat-bar hidden">
+      <div class="compat-txt">
+        <strong>Compatibles avec</strong>
+        <span id="compat-name">—</span>
+        <em id="compat-types"></em>
+      </div>
+      <button class="icon-btn" id="compat-close" title="Revenir au catalogue complet">✕</button>
+    </div>
+
+    <div class="grid" id="block-grid"></div>
+
+    <footer class="panel-foot foot-row">
+      <small id="catalog-count">—</small>
+      <button class="link-btn" id="btn-privacy" title="Périmètre d'accès aux données">Confidentialité</button>
+    </footer>
+  </aside>
+
+  <!-- ══════════ SCÈNE ══════════ -->
+  <main id="stage">
+    <canvas id="canvas"></canvas>
+
+    <div id="topbar">
+      <div class="tb-group only-mobile">
+        <button class="tb-btn" id="btn-open-catalog" title="Catalogue">☰</button>
+      </div>
+      <div class="tb-group" data-editor>
+        <button class="tb-btn" data-tool="translate" title="Déplacer (G)">
+          <svg viewBox="0 0 24 24"><path d="M12 2v20M2 12h20M12 2l-3 3M12 2l3 3M12 22l-3-3M12 22l3-3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3"/></svg>
+        </button>
+        <button class="tb-btn" data-tool="rotate" title="Pivoter (R)">
+          <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 3v5h-5"/></svg>
+        </button>
+      </div>
+      <div class="tb-group" data-editor>
+        <button class="tb-btn" id="btn-duplicate" title="Dupliquer (D)">
+          <svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+        <button class="tb-btn" id="btn-delete" title="Supprimer (Suppr)">
+          <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+        </button>
+        <button class="tb-btn" id="btn-undo" title="Annuler (Ctrl+Z)">
+          <svg viewBox="0 0 24 24"><path d="M3 7v6h6"/><path d="M3 13a9 9 0 1 0 3-7.7L3 8"/></svg>
+        </button>
+        <button class="tb-btn" id="btn-redo" title="Rétablir (Ctrl+Y)">
+          <svg viewBox="0 0 24 24"><path d="M21 7v6h-6"/><path d="M21 13a9 9 0 1 1-3-7.7L21 8"/></svg>
+        </button>
+      </div>
+      <div class="tb-group">
+        <button class="tb-btn" id="btn-magnet" title="Magnétisme des points d'insertion">
+          <svg viewBox="0 0 24 24"><path d="M6 4v8a6 6 0 0 0 12 0V4h-4v8a2 2 0 0 1-4 0V4Z"/><path d="M6 8h4M14 8h4"/></svg>
+        </button>
+        <button class="tb-btn" id="btn-snap" title="Aimantation à la grille">
+          <svg viewBox="0 0 24 24"><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
+        </button>
+        <button class="tb-btn" id="btn-view" title="Vue de dessus / perspective">
+          <svg viewBox="0 0 24 24"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        </button>
+        <button class="tb-btn" id="btn-fit" title="Recadrer (F)">
+          <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+        </button>
+      </div>
+      <div class="tb-spacer"></div>
+      <div class="tb-group hidden" id="grp-edit-mode">
+        <button class="tb-btn wide" id="btn-edit-mode">✎ Modifier cette configuration</button>
+      </div>
+      <div class="tb-group">
+        <button class="tb-btn wide" id="btn-share">Partager le lien</button>
+      </div>
+    </div>
+
+    <div id="placing-hint" class="hint hidden">Cliquez pour poser · <kbd>R</kbd> pivoter · <kbd>Échap</kbd> annuler</div>
+    <div id="tip" class="hint tip">Clic droit sur un bloc posé : les blocs compatibles</div>
+    <div id="toast" class="toast hidden"></div>
+    <div id="loader" class="loader"><div class="spinner"></div><span>Chargement de la bibliothèque…</span></div>
+
+    <div id="viewcube">
+      <button data-view="iso">ISO</button>
+      <button data-view="top">HAUT</button>
+      <button data-view="front">FACE</button>
+      <button data-view="right">DROITE</button>
+    </div>
+  </main>
+
+  <!-- ══════════ CONFIGURATION / DEVIS ══════════ -->
+  <aside id="inspector" class="panel">
+    <header class="panel-head">
+      <strong>Ma configuration</strong>
+      <button class="icon-btn only-mobile" id="btn-close-inspector" title="Fermer">✕</button>
+    </header>
+
+    <section id="selection-box" class="section hidden">
+      <h4>Élément sélectionné</h4>
+      <div class="sel-name" id="sel-name">—</div>
+      <div class="field-row">
+        <label>Rotation Z</label>
+        <div class="stepper">
+          <button data-rot="-90">↺</button>
+          <input type="number" id="sel-rot" step="15" value="0" />
+          <button data-rot="90">↻</button>
+        </div>
+      </div>
+      <div class="field-row">
+        <label>Hauteur (Z)</label>
+        <input type="number" id="sel-z" step="0.01" value="0" />
+      </div>
+      <div class="field-row" id="finish-row">
+        <label>Finition</label>
+        <div class="swatches" id="sel-finishes"></div>
+      </div>
+      <div class="sel-meta" id="sel-meta"></div>
+    </section>
+
+    <section class="section grow">
+      <h4>Nomenclature</h4>
+      <ul class="bom" id="bom"><li class="empty">Aucun élément. Choisissez un bloc dans le catalogue.</li></ul>
+    </section>
+
+    <section class="section totals">
+      <div class="total-row"><span>Éléments</span><b id="total-count">0</b></div>
+      <div class="total-row"><span>Encombrement</span><b id="total-size">—</b></div>
+      <div class="total-row big" id="price-row"><span>Total estimé</span><b id="total-price">—</b></div>
+      <small class="disclaimer" id="price-note">Estimation indicative, hors pose et livraison.</small>
+    </section>
+
+    <footer class="panel-foot actions">
+      <button class="btn primary" id="btn-quote">Demander un devis</button>
+      <div class="btn-row">
+        <button class="btn" id="btn-png">Image</button>
+        <button class="btn" id="btn-json">JSON</button>
+        <button class="btn" id="btn-obj">OBJ</button>
+      </div>
+      <button class="btn ghost" id="btn-clear">Tout effacer</button>
+    </footer>
+  </aside>
+
+  <button id="fab-inspector" class="fab only-mobile" title="Ma configuration"><span id="fab-count">0</span></button>
+</div>
+
+<!-- ══════════ MODALES ══════════ -->
+<div id="modal-share" class="modal hidden">
+  <div class="modal-card">
+    <h3>Partager cette configuration</h3>
+    <p>Toute personne disposant de ce lien ouvrira exactement cette composition, modifiable dans son navigateur.</p>
+    <div class="copy-row">
+      <input type="text" id="share-url" readonly />
+      <button class="btn primary" id="btn-copy">Copier</button>
+    </div>
+    <label class="check"><input type="checkbox" id="share-viewonly" /> Lien en lecture seule (visualisation)</label>
+    <h4>Intégrer sur un site</h4>
+    <div class="copy-row">
+      <input type="text" id="embed-code" readonly />
+      <button class="btn" id="btn-copy-embed">Copier</button>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" data-close>Fermer</button></div>
+  </div>
+</div>
+
+<div id="modal-privacy" class="modal hidden">
+  <div class="modal-card">
+    <h3>Périmètre d'accès</h3>
+    <p>Ce que cette application peut atteindre — et rien d'autre.</p>
+    <table class="audit" id="audit-table"></table>
+    <h4>Appliqué par le navigateur</h4>
+    <pre class="csp" id="audit-csp"></pre>
+    <p class="mini" id="audit-note"></p>
+    <div class="modal-foot"><button class="btn ghost" data-close>Fermer</button></div>
+  </div>
+</div>
+
+<div id="modal-quote" class="modal hidden">
+  <div class="modal-card">
+    <h3>Demande de devis</h3>
+    <div class="form-grid">
+      <label>Nom<input type="text" id="q-name" /></label>
+      <label>Société<input type="text" id="q-company" /></label>
+      <label>E-mail<input type="email" id="q-email" /></label>
+      <label>Téléphone<input type="tel" id="q-phone" /></label>
+      <label class="full">Message<textarea id="q-msg" rows="3"></textarea></label>
+    </div>
+    <p class="mini">La configuration (nomenclature + lien 3D) est jointe automatiquement.</p>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close>Annuler</button>
+      <button class="btn" id="btn-quote-copy">Copier le récapitulatif</button>
+      <button class="btn primary" id="btn-quote-send">Envoyer</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

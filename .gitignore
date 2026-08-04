@@ -1,0 +1,20 @@
+# jeton de publication GitHub — ne doit JAMAIS etre versionne
+publication.json
+rhino/publication.json
+*.token
+
+# config locale contenant une cle API Google
+config.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+
+# systeme
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# exports temporaires
+*-composition.json
+*-configuration.png

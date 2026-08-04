@@ -1,0 +1,11 @@
+{
+  "title": "Cuisine modulaire",
+  "brand": "Cuisine modulaire — démo",
+  "quoteEmail": "contact@votre-entreprise.fr",
+  "priceNote": "Estimation indicative, hors pose et livraison.",
+
+  "source": {
+    "type": "static",
+    "library": "data/library.json"
+  }
+}

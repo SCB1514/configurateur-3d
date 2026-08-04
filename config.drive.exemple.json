@@ -1,0 +1,22 @@
+{
+  "_lisez_moi": [
+    "Modèle de configuration pour une bibliothèque hébergée dans UN dossier Google Drive.",
+    "Renommez ce fichier en config.json une fois folderId et apiKey renseignés.",
+    "folderId  : identifiant du dossier — l'URL complète du dossier est acceptée telle quelle.",
+    "apiKey    : clé API Google Cloud, restreinte au référent HTTP de votre site ET à l'API Drive.",
+    "libraryFile : facultatif, nom du fichier à ouvrir par défaut si le dossier en contient plusieurs.",
+    "Vérifiez la configuration avant mise en ligne :  python tools/check_drive_folder.py"
+  ],
+
+  "title": "Ma gamme",
+  "brand": "Ma société",
+  "quoteEmail": "contact@ma-societe.fr",
+  "priceNote": "Estimation indicative, hors pose et livraison.",
+
+  "source": {
+    "type": "drive",
+    "folderId": "https://drive.google.com/drive/folders/METTRE_ICI_L_ID_DU_DOSSIER",
+    "apiKey": "METTRE_ICI_LA_CLE_API",
+    "libraryFile": "library.json"
+  }
+}
