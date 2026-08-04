@@ -469,7 +469,7 @@ def publish_to_github(content_bytes, cfg, message):
     """
     owner, repo = cfg.get("owner"), cfg.get("repo")
     branch = cfg.get("branch") or "main"
-    path = cfg.get("path") or "configurateur-3d/data/library.json"
+    path = cfg.get("path") or "data/library.json"
     token = cfg.get("token") or os.environ.get("GITHUB_TOKEN")
     if not (owner and repo and token):
         return None, "Configuration incomplete (owner / repo / token)."

@@ -615,17 +615,21 @@ export class Viewer {
 
     if (this.ghost) {
       const p = this._dropPoint(ev);
+      let pose = null;
       if (p) {
         const t = this._ghostTransform(p);
-        this.hooks.onPlace?.({
+        pose = {
           blockId: this.ghostBlock.id,
           pos: [r4(t.origin.x), r4(t.origin.y), r4(t.origin.z - this.ghostBlock.baseOffset)],
           rot: r4(t.yaw),
           finish: this.ghostFinish,
           connected: !!t.snap,
-        });
+        };
       }
+      // on quitte le mode pose AVANT de prévenir l'application, pour qu'elle
+      // voie l'état réel (fantôme absent) et range l'indication à l'écran
       if (!ev.shiftKey) this.cancelPlacing();   // Maj = pose en série
+      if (pose) this.hooks.onPlace?.(pose);
       return;
     }
 

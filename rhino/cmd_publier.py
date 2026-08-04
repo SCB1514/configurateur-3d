@@ -58,7 +58,7 @@ def ask_config(cfg):
 
     if not cfg.get("path"):
         v = rs.StringBox("Chemin du fichier dans le depot",
-                         "configurateur-3d/data/library.json", "Publication — chemin")
+                         "data/library.json", "Publication — chemin")
         if not v:
             return None
         cfg["path"] = v.strip(); changed = True

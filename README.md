@@ -5,16 +5,20 @@ d'une **bibliothèque de blocs Rhino pré-enregistrés** — puis partager le r�
 par un simple lien.
 
 ```
-Rhino (.3dm, définitions de blocs)
-        │  rhino/export_blocks_to_library.py
+Rhino (.3dm, blocs équipés de « Points d'insertion A / B / C »)
+        │
+        │  commande  PublierBibliotheque
         ▼
-   data/library.json ──────► application web (catalogue + scène 3D + devis)
-                                     │
-                                     ├─► lien partageable   …/#c=zXY…
-                                     ├─► iframe intégrable sur votre site
-                                     ├─► image PNG / maillage OBJ
-                                     └─► composition.json ──► rhino/import_composition.py ──► Rhino
+   GitHub  ──►  Actions  ──►  GitHub Pages  ──►  configurateur en ligne
+                                                        │
+                                                        ├─► lien partageable   …/#c=zXY…
+                                                        ├─► iframe intégrable sur votre site
+                                                        ├─► image PNG / maillage OBJ
+                                                        └─► composition.json ──► ImporterComposition ──► Rhino
 ```
+
+Les blocs se **magnétisent** entre eux par leurs points d'insertion, et un
+**clic droit** sur un bloc posé ne propose que ce qui peut s'y connecter.
 
 Aucun serveur applicatif, aucune base de données : ce sont des fichiers statiques.
 **La configuration entière est encodée dans l'URL** (compressée), donc un lien suffit
@@ -25,16 +29,52 @@ Aucun serveur applicatif, aucune base de données : ce sont des fichiers statiqu
 ## 1. Démarrer en local
 
 ```bash
-python -m http.server 5180 --directory configurateur-3d
+python configurateur-3d/tools/serve.py
 ```
 
 Puis ouvrir <http://localhost:5180>. Une bibliothèque de démonstration
-(cuisine modulaire, 17 blocs) est déjà fournie.
+(cuisine modulaire, 17 blocs, points d'insertion A/B/C/D/E) est déjà fournie.
 
 > Un serveur est nécessaire : les modules ES et `fetch()` ne fonctionnent pas
-> en `file://`.
+> en `file://`. `tools/serve.py` désactive le cache, pratique en développement.
 
-## 2. Mettre en ligne
+---
+
+## 1 bis. Publier depuis Rhino (le circuit court)
+
+Le dossier [`rhino/`](rhino/) est un petit plugin Python : cinq commandes
+installées en une fois par `_RunPythonScript` → `rhino/installer.py`.
+
+```
+PointInsertion          poser les points d'accroche A / B / C sur la géométrie
+_Block                  créer le bloc produit (géométrie + points)
+VerifierBibliotheque    contrôler noms, connexions, blocs orphelins
+PublierBibliotheque     envoi GitHub → le site public se met à jour tout seul
+ImporterComposition     relire la composition d'un client dans Rhino
+```
+
+`PublierBibliotheque` écrit `data/library.json` dans le dépôt via l'API GitHub
+(aucun `git` ni `gh` requis), ce qui déclenche le workflow
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) : contrôle du
+fichier puis redéploiement de GitHub Pages, en 30 à 60 secondes.
+
+Le jeton d'accès est stocké dans `%APPDATA%\Configurateur3D\publication.json`,
+**hors du dépôt**. Mode d'emploi complet : [rhino/README.md](rhino/README.md).
+
+### Mise en place du dépôt
+
+```bash
+cd configurateur-3d
+git remote add origin https://github.com/VOUS/configurateur-3d.git
+git push -u origin main
+```
+
+Puis sur GitHub : *Settings → Pages → Source : **GitHub Actions***.
+Le site est publié sur `https://VOUS.github.io/configurateur-3d/`.
+
+---
+
+## 2. Mettre en ligne (autres hébergeurs)
 
 N'importe quel hébergement statique convient — glisser le dossier `configurateur-3d`
 sur **Netlify Drop**, **Vercel**, **GitHub Pages**, ou dans un dossier de votre
@@ -216,10 +256,38 @@ Intégration sur un site (bouton **Partager le lien** → *Intégrer sur un site
 
 ## 5. Utilisation
 
+### Le magnétisme des points d'insertion
+
+Chaque bloc peut porter des points d'insertion (`A`, `B`, `C`…), définis dans
+Rhino comme des blocs imbriqués. Deux blocs porteurs de la **même lettre** se
+rejoignent : les points se superposent exactement, et les axes Z se mettent en
+vis-à-vis.
+
+- Approchez un bloc d'un point compatible : il se cale tout seul, un **anneau
+  vert** marque la connexion et les points libres compatibles apparaissent en
+  vert dans la scène.
+- Un point horizontal aligne aussi la rotation — deux meubles côte à côte gardent
+  leur façade du même côté. Un point vertical n'impose que la hauteur.
+- Le bouton **aimant** de la barre d'outils désactive le magnétisme si besoin.
+- Les vignettes du catalogue affichent les lettres portées par chaque bloc.
+
+### Clic droit : uniquement ce qui peut se connecter
+
+**Clic droit sur un bloc posé** → le catalogue ne montre plus que les blocs
+partageant un de ses points d'insertion **encore libres**. Un clic sur l'un
+d'eux le pose directement à sa place, connecté, sans viser à la souris — et le
+panneau enchaîne aussitôt sur le nouveau bloc. C'est la façon la plus rapide de
+dérouler une implantation complète.
+
+<kbd>Échap</kbd> ou ✕ pour revenir au catalogue complet.
+
+### Gestes
+
 | Action | Geste |
 |---|---|
 | Poser un bloc | clic sur une vignette, puis clic dans la scène |
 | Poser en série | maintenir <kbd>Maj</kbd> au moment de poser |
+| Blocs compatibles | **clic droit** sur un bloc posé |
 | Empiler | survoler la face supérieure d'un bloc déjà posé (hauteur exacte) |
 | Sélectionner | clic sur un bloc |
 | Déplacer / pivoter | flèches du gizmo, ou <kbd>G</kbd> / <kbd>R</kbd> |
@@ -242,17 +310,30 @@ automatiquement dans le navigateur.
   "name": "Ma gamme", "units": "mm", "currency": "€",
   "priceEnabled": true, "gridStep": 50,          // pas d'aimantation, en unités biblio
   "categories": [{ "id": "Caissons", "name": "Caissons" }],
+  "connectorTypes": [{ "id": "A", "name": "A — liaison latérale" }],
   "blocks": [{
     "id": "caisson-bas-600", "name": "Caisson bas 600",
     "category": "Caissons", "price": 222, "ref": "CB-600",
     "description": "600 × 580 × 820 mm",
     "finishes": [{ "id": "chene", "name": "Chêne", "color": "#c69b63" }],
+    "connectors": [                              // les points d'insertion
+      { "type": "A", "pos": [-300, 0, 410], "dir": [-1, 0, 0] },
+      { "type": "A", "pos": [ 300, 0, 410], "dir": [ 1, 0, 0] },
+      { "type": "B", "pos": [   0, 0, 820], "dir": [ 0, 0, 1] }
+    ],
     "meshes": [{
       "color": "#e8e6e1", "opacity": 1, "paintable": true,
       "positions": [x,y,z, …], "normals": [nx,ny,nz, …], "indices": [a,b,c, …]
     }]
   }]
 }
+```
+
+`pos` est exprimé dans l'unité de la bibliothèque, dans le repère local du bloc ;
+`dir` est l'axe Z du point, orienté vers l'extérieur. Validez un fichier avec :
+
+```bash
+python tools/check_library.py data/library.json
 ```
 
 Le format est volontairement trivial : n'importe quelle autre source
@@ -270,20 +351,28 @@ configurateur-3d/
 ├── config.drive.exemple.json   modèle pour une source Google Drive
 ├── assets/style.css
 ├── src/
-│   ├── main.js             état, sources, catalogue, nomenclature, devis
-│   ├── viewer.js           scène Three.js (Z-up), pose, empilement, gizmo
-│   ├── library.js          lecture du library.json → géométries
+│   ├── main.js             état, sources, catalogue, compatibles, devis
+│   ├── viewer.js           scène Three.js (Z-up), pose, magnétisme, gizmo
+│   ├── library.js          lecture du library.json → géométries + connecteurs
 │   ├── drive.js            accès Drive borné à un dossier (voir en-tête du fichier)
 │   ├── thumbnails.js       vignettes du catalogue, rendues à la volée
 │   ├── share.js            configuration ⇄ URL (deflate + base64url)
 │   └── exporters.js        PNG, composition JSON, OBJ, récapitulatif
 ├── vendor/three/           Three.js embarqué (aucun CDN, aucun script tiers)
 ├── data/library.json       bibliothèque publiée (démo fournie)
-├── rhino/
-│   ├── export_blocks_to_library.py    Rhino → library.json
-│   └── import_composition.py          composition JSON → Rhino
+├── rhino/                  le « plugin » : 5 commandes Rhino — voir rhino/README.md
+│   ├── installer.py                   installe les alias de commandes
+│   ├── configurateur_lib.py           moteur : points d'insertion, maillage, publication
+│   ├── cmd_point_insertion.py         poser les points A / B / C
+│   ├── cmd_verifier.py                contrôle avant publication
+│   ├── cmd_exporter.py                library.json sur le disque
+│   ├── cmd_publier.py                 publication GitHub en un clic
+│   └── cmd_importer.py                composition client → Rhino
+├── .github/workflows/deploy.yml       contrôle + déploiement GitHub Pages
 └── tools/
+    ├── serve.py                       serveur de développement sans cache
     ├── gen_demo_library.py            bibliothèque de démonstration
+    ├── check_library.py               validation d'un library.json
     └── check_drive_folder.py          diagnostic de la source Drive
 ```
 
@@ -296,7 +385,9 @@ mode `static`.
 
 - Pas de gestion multi-utilisateurs ni de sauvegarde côté serveur : le lien est la donnée.
   Au-delà de ~400 éléments, l'URL devient longue (préférez alors l'export JSON).
-- Les blocs sont posés tels quels : pas de contraintes d'assemblage ni de collisions.
-  Un système de points d'accrochage peut être ajouté dans `viewer.js` (`_dropPoint`).
+- Le magnétisme ne corrige que la rotation **autour de Z**. Un bloc à poser
+  incliné (rampant, pente de toit) doit être orienté ainsi dans Rhino.
+- Pas de détection de collision générale : seul l'accrochage automatique par
+  clic droit évite de superposer deux blocs au même endroit.
 - Les matériaux Rhino ne sont pas transférés — seules les couleurs d'affichage le sont,
   complétées par les finitions déclarées au catalogue.
