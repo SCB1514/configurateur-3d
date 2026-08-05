@@ -102,7 +102,7 @@ export class Viewer {
     this.gizmo.setSize(0.85);
     this.gizmo.addEventListener('dragging-changed', e => {
       this.controls.enabled = !e.value;
-      if (e.value) this._depart = this.selected ? this.selected.position.clone() : null;
+      if (e.value) this._captureDepart();
       else { this._depart = null; this.clearSnapHints(); this.hooks.onCommit?.(); }
     });
     this.gizmo.addEventListener('objectChange', () => this._readTransform());
@@ -330,10 +330,32 @@ export class Viewer {
     if (!obj) return;
     const block = this.lib.block(obj.userData.blockId);
 
-    // Déplacement de groupe : pas encore fiable, le report de l'écart sur les
-    // voisins se cumulait d'une image à l'autre. Le gizmo ne déplace donc que
-    // l'élément tenu ; la sélection multiple sert au cadre coté, à la
-    // duplication et à la suppression.
+    // Déplacement de groupe.
+    //
+    // Les positions de départ de TOUTE la sélection sont relevées à l'appui du
+    // gizmo. À chaque image on repart de ces positions absolues et on y ajoute
+    // l'écart parcouru par l'élément tenu. Reporter un écart image après image,
+    // comme le faisait la première version, le cumulait et les machines
+    // s'éloignaient les unes des autres.
+    if (this._depart && this.tool === 'translate') {
+      const ancre = this._depart.get(obj.userData.uid);
+      if (ancre) {
+        const ecart = obj.position.clone().sub(ancre);
+        for (const [uid, origine] of this._depart) {
+          if (uid === obj.userData.uid) continue;
+          const autre = this.objects.get(uid);
+          if (!autre) continue;
+
+          autre.position.copy(origine).add(ecart);
+          const bloc = this.lib.block(autre.userData.blockId);
+          this.hooks.onTransform?.(uid, {
+            pos: [r4(autre.position.x), r4(autre.position.y),
+                  r4(autre.position.z - (bloc?.baseOffset || 0))],
+            rot: r4(autre.rotation.z / DEG),
+          });
+        }
+      }
+    }
 
     const off = block?.baseOffset || 0;
     let z = obj.position.z - off;
@@ -374,6 +396,18 @@ export class Viewer {
 
   /** Les objets actuellement choisis. */
   get selectedUids() { return this.selection || []; }
+
+  /** Positions de départ de la sélection, relevées à l'appui du gizmo. */
+  _captureDepart() {
+    this._depart = null;
+    if (!this.selected || (this.selection || []).length < 2) return;
+
+    this._depart = new Map();
+    for (const uid of this.selection) {
+      const obj = this.objects.get(uid);
+      if (obj) this._depart.set(uid, obj.position.clone());
+    }
+  }
 
   setTool(tool) {
     this.tool = tool;
