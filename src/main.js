@@ -146,7 +146,6 @@ async function activateLibrary(key) {
   // bibliothèque sans point d'insertion : magnétisme et astuce sans objet
   const hasConnectors = lib.list.some(b => b.connectorTypes.length);
   $('#btn-magnet').classList.toggle('hidden', !hasConnectors);
-  $('#tip').classList.toggle('hidden', !hasConnectors);
 
   renderLibrarySwitch();
   renderPresets();

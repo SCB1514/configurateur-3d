@@ -107,9 +107,22 @@ export class Viewer {
     // claire. On le garde pour la saisie — le lancer de rayon ignore la
     // visibilité du matériau — mais on cesse de le dessiner.
     this.gizmo.traverse(o => {
-      if (o.type !== 'TransformControlsPlane' || !o.material) return;
-      o.material.visible = false;
-      o.material.opacity = 0;
+      if (!o.material) return;
+
+      // Le plan de saisie : un carré de 100 000 unités peint à 10 % d'opacité.
+      if (o.type === 'TransformControlsPlane') {
+        o.material.visible = false;
+        o.material.opacity = 0;
+        return;
+      }
+
+      // Les guides d'axe : des lignes d'un million d'unités que Three.js laisse
+      // peintes en permanence. Elles traversent toute la vue en perspective.
+      const g = o.geometry?.attributes?.position;
+      if (!o.isLine || !g) return;
+      let etendue = 0;
+      for (let i = 0; i < g.count * 3; i++) etendue = Math.max(etendue, Math.abs(g.array[i]));
+      if (etendue > 1e4) o.material.visible = false;
     });
 
     this.scene.add(this.gizmo);
