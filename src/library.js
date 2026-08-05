@@ -28,6 +28,15 @@ export class Library {
     this.categories = raw.categories || [];
     // libellés des points d'insertion : [{id:'A', name:"Point d'insertion A"}]
     this.connectorTypes = raw.connectorTypes || [];
+    // matériaux relevés dans Rhino, repris tels quels par le panneau Matériaux
+    this.materials = (raw.materials || []).map(m => ({
+      id: String(m.id || m.name || ''),
+      name: m.name || m.id || 'Matériau',
+      color: m.color || '#b9c2cd',
+      metalness: m.metalness ?? 0.05,
+      roughness: m.roughness ?? 0.72,
+      opacity: m.opacity ?? 1,
+    })).filter(m => m.id);
     this.blocks = new Map();
     this.order = [];
 
@@ -100,6 +109,7 @@ export class Library {
         metalness: m.metalness ?? 0.05,
         roughness: m.roughness ?? 0.72,
         paintable: !!m.paintable,
+        material: m.material || '',
         name: m.name || '',
       });
     }

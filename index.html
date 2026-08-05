@@ -175,7 +175,20 @@
         <label>Finition</label>
         <div class="swatches" id="sel-finishes"></div>
       </div>
+      <div class="field-row" id="color-row">
+        <label>Couleur libre</label>
+        <div class="color-pick">
+          <input type="color" id="sel-color" value="#5b2d8e" title="Couleur RGB de l'élément" />
+          <button class="btn small" id="btn-color-reset" title="Revenir au coloris catalogue">Réinit.</button>
+        </div>
+      </div>
       <div class="sel-meta" id="sel-meta"></div>
+    </section>
+
+    <section class="section" id="materials-box">
+      <h4>Matériaux</h4>
+      <ul class="materials" id="materials-list"></ul>
+      <small class="disclaimer">Matériaux relevés dans Rhino. Cliquez-en un pour l'appliquer à l'élément sélectionné.</small>
     </section>
 
     <section class="section grow">

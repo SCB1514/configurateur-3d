@@ -52,8 +52,12 @@ export class Viewer {
     this.controls.target.set(0, 0, 0.4);
 
     /* ---------- lumières ---------- */
-    const hemi = new THREE.HemisphereLight(0xdfe8ff, 0x1a1f27, 1.1);
+    const hemi = new THREE.HemisphereLight(0xdfe8ff, 0x1a1f27, 0.85);
     this.scene.add(hemi);
+    // Une seconde source, plus froide et rasante, détache les arêtes des capots.
+    const contre = new THREE.DirectionalLight(0x9fc4ff, 0.55);
+    contre.position.set(-7, 5, 3);
+    this.scene.add(contre);
     const sun = new THREE.DirectionalLight(0xffffff, 2.1);
     sun.position.set(6, -8, 12);
     sun.castShadow = true;
@@ -210,6 +214,9 @@ export class Viewer {
         transparent: part.opacity < 1,
         opacity: part.opacity,
         side: THREE.DoubleSide,
+        // L'environnement fait tout le rendu des reflets : sans lui, un métal
+        // rugueux paraît mat et un chrome paraît gris.
+        envMapIntensity: 1.15,
       });
       this._materials.set(key, m);
     }
@@ -232,8 +239,9 @@ export class Viewer {
   addItem(item) {
     const block = this.lib.block(item.blockId);
     if (!block) return null;
+    // La couleur choisie librement par le client prime sur la variante catalogue.
     const finish = block.finishes.find(f => f.id === item.finish);
-    const obj = this._build(block, finish?.color);
+    const obj = this._build(block, item.color || finish?.color);
     obj.userData.uid = item.uid;
     obj.userData.blockId = item.blockId;
     this._applyTransform(obj, item, block);
@@ -272,7 +280,7 @@ export class Viewer {
     for (const it of items) {
       if (this.objects.has(it.uid)) {
         const obj = this.objects.get(it.uid);
-        if (obj.userData.finish !== it.finish) this.updateItem(it);
+        if (obj.userData.finish !== it.finish || obj.userData.color !== it.color) this.updateItem(it);
         else this._applyTransform(obj, it, this.lib.block(it.blockId));
       } else this.addItem(it);
     }
@@ -285,6 +293,7 @@ export class Viewer {
     const s = item.scale || 1;
     obj.scale.set(s, s, s);
     obj.userData.finish = item.finish;
+    obj.userData.color = item.color;
   }
 
   _readTransform() {

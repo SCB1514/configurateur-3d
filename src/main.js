@@ -155,6 +155,7 @@ async function activateLibrary(key) {
   $('#search').value = '';
   renderCategories();
   renderCatalog();
+  renderMaterials();
 }
 
 function renderLibrarySwitch() {
@@ -551,6 +552,42 @@ function refreshAll() {
   refreshSelectionPanel();
 }
 
+/* ══════════════════ matériaux ══════════════════
+   La palette vient de Rhino : on ne la réinvente pas, on l'applique.
+   ============================================== */
+function renderMaterials() {
+  const box = $('#materials-box'), list = $('#materials-list');
+  const mats = app.lib?.materials || [];
+  box.classList.toggle('hidden', !mats.length);
+  if (!mats.length) return;
+
+  list.innerHTML = '';
+  for (const m of mats) {
+    const li = document.createElement('li');
+    li.title = `${m.name} — métal ${m.metalness}, rugosité ${m.roughness}`
+             + (m.opacity < 1 ? `, opacité ${m.opacity}` : '');
+    const dot = document.createElement('span');
+    dot.className = 'mat-dot';
+    dot.style.background = m.color;
+    const nom = document.createElement('span');
+    nom.className = 'mat-name';
+    nom.textContent = m.name;
+    const props = document.createElement('span');
+    props.className = 'mat-props';
+    props.textContent = m.metalness > 0.5 ? 'métal' : (m.roughness < 0.3 ? 'brillant' : 'mat');
+    li.append(dot, nom, props);
+    li.onclick = () => {
+      const it = find(app.selected);
+      if (!it) return toast('Sélectionnez d’abord un élément', true);
+      it.color = m.color;
+      app.viewer.updateItem(it);
+      pushHistory(); refreshSelectionPanel();
+      toast(`Matériau « ${m.name} » appliqué`);
+    };
+    list.appendChild(li);
+  }
+}
+
 /* ══════════════════ sélection ══════════════════ */
 function onSelect(uid) {
   app.selected = uid;
@@ -593,6 +630,9 @@ function refreshSelectionPanel() {
     pts,
     b.description ? escapeHtml(b.description) : '',
   ].filter(Boolean).join('<br>');
+
+  const couleur = it.color || b.finishes.find(f => f.id === it.finish)?.color || '#b9c2cd';
+  $('#sel-color').value = /^#[0-9a-f]{6}$/i.test(couleur) ? couleur : '#b9c2cd';
 
   const fr = $('#finish-row'), fx = $('#sel-finishes');
   fx.innerHTML = '';
@@ -683,6 +723,22 @@ function wireUI() {
     app._topView = !app._topView;
     app.viewer.setView(app._topView ? 'top' : 'iso');
   };
+  $('#sel-color').oninput = e => {
+    const it = find(app.selected);
+    if (!it) return;
+    it.color = e.target.value;
+    app.viewer.updateItem(it);            // mise a jour immediate du rendu
+    scheduleSave();
+  };
+  $('#sel-color').onchange = () => pushHistory();
+  $('#btn-color-reset').onclick = () => {
+    const it = find(app.selected);
+    if (!it) return;
+    delete it.color;
+    app.viewer.updateItem(it);
+    pushHistory(); refreshSelectionPanel();
+  };
+
   $('#preset-select').onchange = describePreset;
   $('#btn-preset-load').onclick = () => {
     const id = $('#preset-select').value;
