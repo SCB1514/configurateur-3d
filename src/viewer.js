@@ -197,6 +197,7 @@ export class Viewer {
       const b = this.boundsOf(this.selection);
       if (b) this.selBox.box.copy(b);
     }
+    if (this.dimGroup) this._orientDimensions();
     this.renderer.render(this.scene, this.camera);
   };
 
@@ -228,8 +229,16 @@ export class Viewer {
     return m;
   }
 
-  _build(block, finishColor) {
+  /**
+   * Construit la geometrie d'un bloc, sous-blocs compris.
+   *
+   * Un bloc peut en contenir d'autres, comme dans Rhino : chacun garde son
+   * identite et son materiau, et peut lui-meme en contenir. La profondeur est
+   * bornee pour qu'un bloc se referencant en boucle ne fige pas la page.
+   */
+  _build(block, finishColor, depth = 0) {
     const g = new THREE.Group();
+
     for (const p of block.parts) {
       const mesh = new THREE.Mesh(p.geometry, this._material(p, finishColor));
       mesh.castShadow = true;
@@ -237,6 +246,21 @@ export class Viewer {
       mesh.userData.paintable = p.paintable;
       g.add(mesh);
     }
+
+    if (depth < 6) {
+      for (const child of block.children || []) {
+        const sous = this.lib?.block(child.blockId);
+        if (!sous) continue;
+        const noeud = this._build(sous, finishColor, depth + 1);
+        noeud.position.copy(child.pos);
+        noeud.rotation.z = child.rot * DEG;
+        noeud.scale.setScalar(child.scale);
+        noeud.userData.childOf = block.id;
+        noeud.userData.blockId = sous.id;
+        g.add(noeud);
+      }
+    }
+
     return g;
   }
 
@@ -750,14 +774,19 @@ export class Viewer {
     const unite = this.lib?.units || 'm';
     const n = v => Math.round(v / k);
 
+    // Chaque cote connaît le segment qu'elle mesure : l'étiquette s'orientera
+    // dessus à l'écran, comme une cote de plan, au lieu de rester horizontale.
     const cotes = [
-      [`${n(size.x)} ${unite}`, new THREE.Vector3((min.x + max.x) / 2, min.y, min.z)],
-      [`${n(size.y)} ${unite}`, new THREE.Vector3(max.x, (min.y + max.y) / 2, min.z)],
-      [`${n(size.z)} ${unite}`, new THREE.Vector3(max.x, min.y, (min.z + max.z) / 2)],
+      [`${n(size.x)} ${unite}`, new THREE.Vector3(min.x, min.y, min.z), new THREE.Vector3(max.x, min.y, min.z)],
+      [`${n(size.y)} ${unite}`, new THREE.Vector3(max.x, min.y, min.z), new THREE.Vector3(max.x, max.y, min.z)],
+      [`${n(size.z)} ${unite}`, new THREE.Vector3(max.x, min.y, min.z), new THREE.Vector3(max.x, min.y, max.z)],
     ];
-    if (label) cotes.push([label, new THREE.Vector3((min.x + max.x) / 2, (min.y + max.y) / 2, max.z)]);
 
-    for (const [texte, position] of cotes) this.dimGroup.add(this._label(texte, position));
+    for (const [texte, a, b] of cotes) this.dimGroup.add(this._label(texte, a, b));
+    if (label) {
+      const haut = new THREE.Vector3((min.x + max.x) / 2, (min.y + max.y) / 2, max.z);
+      this.dimGroup.add(this._label(label, haut, null));
+    }
     this.scene.add(this.dimGroup);
   }
 
@@ -770,31 +799,64 @@ export class Viewer {
     this.dimGroup = null;
   }
 
-  /** Étiquette de cote : un panneau toujours face à la caméra. */
-  _label(texte, position) {
+  /**
+   * Étiquette de cote.
+   *
+   * Placée au milieu du segment mesuré et tournée, à l'écran, dans son axe :
+   * une cote se lit le long de ce qu'elle mesure. Sans second point, elle
+   * reste horizontale — c'est le cas du nom de la sélection.
+   */
+  _label(texte, a, b = null) {
+    const POLICE = 26;                          // typographie discrète
+    const HAUT = 40;
+
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
-    ctx.font = 'bold 44px Inter, Segoe UI, sans-serif';
-    const largeur = Math.ceil(ctx.measureText(texte).width) + 32;
-    canvas.width = largeur; canvas.height = 68;
+    ctx.font = `600 ${POLICE}px Inter, Segoe UI, sans-serif`;
+    const largeur = Math.ceil(ctx.measureText(texte).width) + 20;
+    canvas.width = largeur; canvas.height = HAUT;
 
     const c2 = canvas.getContext('2d');
-    c2.font = 'bold 44px Inter, Segoe UI, sans-serif';
-    c2.fillStyle = 'rgba(12,16,22,0.86)';
-    c2.roundRect(0, 0, largeur, 68, 14); c2.fill();
+    c2.font = `600 ${POLICE}px Inter, Segoe UI, sans-serif`;
+    c2.fillStyle = 'rgba(12,16,22,0.82)';
+    c2.roundRect(0, 0, largeur, HAUT, 8); c2.fill();
     c2.fillStyle = '#3ecf8e';
     c2.textBaseline = 'middle';
-    c2.fillText(texte, 16, 36);
+    c2.fillText(texte, 10, HAUT / 2 + 1);
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
     const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
       map: texture, depthTest: false, transparent: true,
     }));
-    sprite.position.copy(position);
-    const echelle = Math.max(this.gridStep * 4, 0.32);
-    sprite.scale.set(echelle * largeur / 68, echelle, 1);
+
+    sprite.position.copy(b ? a.clone().add(b).multiplyScalar(0.5) : a);
+    const echelle = Math.max(this.gridStep * 2.2, 0.17);
+    sprite.scale.set(echelle * largeur / HAUT, echelle, 1);
+
+    // extrémités retenues : la boucle de rendu s'en sert pour l'orientation
+    if (b) sprite.userData.segment = [a.clone(), b.clone()];
     return sprite;
+  }
+
+  /** Oriente chaque cote dans l'axe de ce qu'elle mesure, tel que vu à l'écran. */
+  _orientDimensions() {
+    if (!this.dimGroup) return;
+    const a = new THREE.Vector3(), b = new THREE.Vector3();
+
+    for (const sprite of this.dimGroup.children) {
+      const segment = sprite.userData?.segment;
+      if (!segment || !sprite.material) continue;
+
+      a.copy(segment[0]).project(this.camera);
+      b.copy(segment[1]).project(this.camera);
+      let angle = Math.atan2(b.y - a.y, (b.x - a.x) * this.camera.aspect);
+
+      // jamais à l'envers : une cote se lit de gauche à droite
+      if (angle > Math.PI / 2) angle -= Math.PI;
+      if (angle < -Math.PI / 2) angle += Math.PI;
+      sprite.material.rotation = angle;
+    }
   }
 
   /** Boîte englobante d'un ensemble d'objets. */

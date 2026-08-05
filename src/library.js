@@ -132,6 +132,20 @@ export class Library {
       };
     });
 
+    /* --- sous-blocs : un bloc peut en contenir d'autres, comme dans Rhino.
+       Ils ne sont pas fondus dans le maillage du parent : ils gardent leur
+       identite, leur materiau et leurs propres sous-blocs. --------------- */
+    const children = (raw.children || []).map(c => {
+      const p = c.pos || [0, 0, 0];
+      return {
+        blockId: String(c.blockId || ''),
+        name: c.name || '',
+        pos: new THREE.Vector3(p[0], p[1], p[2]).multiplyScalar(s),
+        rot: Number(c.rot) || 0,
+        scale: Number(c.scale) > 0 ? Number(c.scale) : 1,
+      };
+    }).filter(c => c.blockId);
+
     const size = bounds.getSize(new THREE.Vector3());
     return {
       id: String(raw.id),
@@ -145,6 +159,7 @@ export class Library {
       finishes: raw.finishes || [],
       meta: raw.meta || {},
       connectors,
+      children,
       connectorTypes: [...new Set(connectors.map(c => c.type))].sort(),
       parts,
       bbox: bounds,

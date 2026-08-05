@@ -413,6 +413,18 @@ add("fontaine", "Fontaine à eau", "Services", 1290, "PF-FE-41",
     [pi("A", (-300, 0, 550), (-1, 0, 0)), pi("A", (300, 0, 550), (1, 0, 0))],
     tags=["eau"])
 
+# ---- BLOC COMPOSE : un bloc qui en contient d autres, comme dans Rhino -----
+socle_duo = Part(CHASSIS)
+socle_duo.add(box(0, 0, 0, 4200, 1100, 80))
+add("poste-duo", "Poste duo cardio", "Cardio", 8990, "PF-DUO-01",
+    "Deux tapis sur socle commun, avec support d halteres",
+    [socle_duo], tags=["compose"])
+blocks[-1]["children"] = [
+    {"blockId": "tapis-course", "name": "Tapis de course", "pos": [-1050, 0, 80], "rot": 0, "scale": 1},
+    {"blockId": "tapis-course", "name": "Tapis de course", "pos": [1050, 0, 80], "rot": 0, "scale": 1},
+    {"blockId": "rack-halteres", "name": "Support d halteres", "pos": [0, 900, 80], "rot": 180, "scale": 1},
+]
+
 # ---------------------------------------------------------------- dispositions
 
 def rangee(bloc, x0, y, n, pas, rot=0):
