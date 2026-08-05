@@ -111,10 +111,17 @@ pre.csp{
   min-width:16px;height:16px;padding:0 4px;border-radius:5px;background:rgba(62,207,142,.9);
   color:#07281a;font-size:9.5px;font-weight:800;display:inline-flex;align-items:center;justify-content:center;
 }
+/* L'astuce est une pilule d'une seule ligne. Sans largeur bornee ni retour a
+   la ligne interdit, son texte se replie dans un panneau etroit : la bordure
+   arrondie de 999 px en fait alors une capsule geante devant la scene. */
 .tip{
   bottom:auto;top:60px;left:auto;right:12px;transform:none;font-size:11px;
   opacity:.62;pointer-events:none;
+  white-space:nowrap;width:max-content;max-width:calc(100% - 24px);
+  overflow:hidden;text-overflow:ellipsis;
 }
+/* En dessous de cette largeur la phrase ne tient pas : on la retire. */
+@media (max-width:700px){ .tip{display:none} }
 
 /* ---------- grille de blocs ---------- */
 .grid{
