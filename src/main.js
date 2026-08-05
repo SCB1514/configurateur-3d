@@ -294,7 +294,10 @@ function renderCatalog() {
       card.appendChild(pts);
     }
 
-    card.onclick = () => (compat ? attachCompatible(b.id) : startPlacing(b.id));
+    card.onclick = () => {
+      if (!compat) return startPlacing(b.id);
+      return compat.replacing ? replaceSelected(b.id) : attachCompatible(b.id);
+    };
     grid.appendChild(card);
     queueThumb(b, img);
   }
@@ -306,30 +309,33 @@ function renderCatalog() {
 }
 
 /* ══════════════════ blocs compatibles (clic droit) ══════════════════ */
-function showCompatible(uid) {
+function showCompatible(uid, typeImpose) {
   const it = find(uid);
   if (!it) return clearCompatible();
   const block = app.lib.block(it.blockId);
-  const free = app.viewer.freeConnectors(uid);
-  const types = [...new Set(free.map(c => c.type))].sort();
+
+  // Un point occupé ouvre le menu comme les autres : on peut vouloir y
+  // remplacer ce qui s'y trouve.
+  const libres = [...new Set(app.viewer.freeConnectors(uid).map(c => c.type))].sort();
+  const types = typeImpose ? [typeImpose] : [...new Set(block.connectorTypes)].sort();
 
   if (!block.connectorTypes.length) {
     toast('Ce bloc n\'a pas de point d\'insertion');
     return clearCompatible();
   }
-  if (!types.length) {
-    toast('Tous les points d\'insertion de ce bloc sont déjà occupés');
-    return clearCompatible();
-  }
 
-  app.compat = { uid, blockName: block.name, types };
+  app.compat = { uid, blockName: block.name, types, libres, replacing: false };
+  $('#btn-replace').classList.remove('on');
   app.filter = { text: '', category: null };
   $('#search').value = '';
   $('#compat-bar').classList.remove('hidden');
   $('#compat-name').textContent = block.name;
-  $('#compat-types').textContent = types.length > 1
-    ? `points libres ${types.join(', ')} — cliquez un bloc, il se connecte`
-    : `point libre ${types[0]} — cliquez un bloc, il se connecte`;
+  const occupes = types.filter(t => !libres.includes(t));
+  $('#compat-types').textContent = libres.length
+    ? `point${libres.length > 1 ? 's' : ''} libre${libres.length > 1 ? 's' : ''} `
+      + `${libres.join(', ')} — cliquez un bloc, il se connecte`
+    : `point${occupes.length > 1 ? 's' : ''} ${occupes.join(', ')} `
+      + `occupé${occupes.length > 1 ? 's' : ''} — utilisez « Remplacer »`;
   renderCategories();
   renderCatalog();
   if (window.innerWidth <= 880) $('#catalog').classList.add('open');
@@ -341,6 +347,39 @@ function clearCompatible() {
   $('#compat-bar').classList.add('hidden');
   renderCategories();
   renderCatalog();
+}
+
+/**
+ * Remplace l'élément sélectionné par un autre bloc, en conservant sa position,
+ * sa rotation et son coloris. Si le nouveau bloc porte le même point
+ * d'insertion, il se raccorde exactement comme l'ancien.
+ */
+function replaceSelected(blockId) {
+  const uid = app.compat?.uid;
+  const ancien = find(uid);
+  const nouveau = app.lib.block(blockId);
+  if (!ancien || !nouveau) return;
+
+  const avant = app.lib.block(ancien.blockId);
+  const remplacant = {
+    ...ancien,
+    blockId,
+    finish: nouveau.finishes.some(f => f.id === ancien.finish)
+      ? ancien.finish : (nouveau.finishes[0]?.id || null),
+  };
+  if (ancien.color && !nouveau.parts.some(p => p.paintable)) delete remplacant.color;
+
+  app.state.items[app.state.items.findIndex(i => i.uid === uid)] = remplacant;
+  app.viewer.updateItem(remplacant);
+  app.viewer.select(uid);
+  pushHistory();
+  refreshAll();
+
+  const memePoint = nouveau.connectorTypes.some(t => avant.connectorTypes.includes(t));
+  toast(memePoint
+    ? `Remplacé par « ${nouveau.name} » — connexions conservées`
+    : `Remplacé par « ${nouveau.name} » — points d'insertion différents`);
+  showCompatible(uid);
 }
 
 function attachCompatible(blockId) {
@@ -927,11 +966,29 @@ function wireUI() {
   $('#canvas').addEventListener('contextmenu', e => {
     e.preventDefault();
     if (app.viewonly) return;
+
+    // Un point d'accroche visé prime : la liste se filtre alors sur SA catégorie,
+    // qu'il soit déjà occupé ou non.
+    const point = app.viewer.pickPointAt(e);
+    if (point) {
+      app.viewer.select(point.uid);
+      return showCompatible(point.uid, point.type);
+    }
+
     const uid = app.viewer.pickAt(e);
     if (!uid) return clearCompatible();
     app.viewer.select(uid);
     showCompatible(uid);
   });
+
+  $('#btn-replace').onclick = () => {
+    if (!app.compat) return;
+    app.compat.replacing = !app.compat.replacing;
+    $('#btn-replace').classList.toggle('on', app.compat.replacing);
+    toast(app.compat.replacing
+      ? "Cliquez un bloc : il remplacera l'élément sélectionné"
+      : "Retour à l'ajout");
+  };
 
   $('#btn-points').onclick = e => {
     const on = !app.viewer.pointsVisible;
