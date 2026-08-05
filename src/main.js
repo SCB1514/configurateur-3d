@@ -156,6 +156,7 @@ async function activateLibrary(key) {
   renderCategories();
   renderCatalog();
   renderMaterials();
+  renderSaves();
 }
 
 function renderLibrarySwitch() {
@@ -552,6 +553,139 @@ function refreshAll() {
   refreshSelectionPanel();
 }
 
+/* ══════════════════ bibliothèque de configurations ══════════════════
+   Les configurations du client vivent dans son navigateur, une entrée par
+   bibliothèque. L'export produit un fichier qu'il peut nous transmettre ou
+   reprendre sur un autre poste.
+   ==================================================================== */
+const SAVES_KEY = () => 'cfg3d:saves:' + app.libKey;
+
+function loadSaves() {
+  try { return JSON.parse(localStorage.getItem(SAVES_KEY()) || '[]'); }
+  catch { return []; }
+}
+
+function writeSaves(list) {
+  try { localStorage.setItem(SAVES_KEY(), JSON.stringify(list)); }
+  catch { toast('Mémoire du navigateur pleine', true); }
+  renderSaves();
+}
+
+function renderSaves() {
+  const list = $('#saves-list');
+  const saves = loadSaves();
+  list.innerHTML = '';
+
+  if (!saves.length) {
+    list.innerHTML = '<li class="empty">Aucune configuration enregistrée.</li>';
+    return;
+  }
+
+  for (const save of saves) {
+    const li = document.createElement('li');
+
+    const nom = document.createElement('span');
+    nom.className = 'nom';
+    nom.textContent = `${save.name} · ${save.items.length}`;
+    nom.title = 'Charger cette configuration';
+    nom.onclick = () => applySave(save);
+
+    const quand = document.createElement('span');
+    quand.className = 'quand';
+    quand.textContent = save.date || '';
+
+    const renommer = document.createElement('button');
+    renommer.className = 'act'; renommer.textContent = '✎';
+    renommer.title = 'Renommer';
+    renommer.onclick = () => {
+      const nouveau = prompt('Nom de la configuration', save.name);
+      if (!nouveau?.trim()) return;
+      const all = loadSaves();
+      const cible = all.find(s => s.id === save.id);
+      if (cible) { cible.name = nouveau.trim(); writeSaves(all); }
+    };
+
+    const supprimer = document.createElement('button');
+    supprimer.className = 'act sup'; supprimer.textContent = '✕';
+    supprimer.title = 'Supprimer';
+    supprimer.onclick = () => {
+      if (!confirm(`Supprimer « ${save.name} » ?`)) return;
+      writeSaves(loadSaves().filter(s => s.id !== save.id));
+    };
+
+    li.append(nom, quand, renommer, supprimer);
+    list.appendChild(li);
+  }
+}
+
+function applySave(save) {
+  if (app.state.items.length &&
+      !confirm(`Remplacer la configuration en cours par « ${save.name} » ?`)) return;
+
+  app.state.items = save.items
+    .filter(i => app.lib.block(i.blockId))
+    .map(i => ({ ...i, uid: newUid() }));
+
+  clearCompatible();
+  app.viewer.syncAll(app.state.items);
+  app.viewer.select(null);
+  app.viewer.fit();
+  pushHistory();
+  refreshAll();
+  toast(`« ${save.name} » chargée — ${app.state.items.length} éléments`);
+}
+
+function saveCurrent() {
+  if (!app.state.items.length) return toast('La configuration est vide', true);
+
+  const defaut = 'Configuration ' + (loadSaves().length + 1);
+  const nom = prompt('Nom de la configuration', defaut);
+  if (!nom?.trim()) return;
+
+  const saves = loadSaves();
+  saves.unshift({
+    id: 's' + Date.now().toString(36),
+    name: nom.trim(),
+    date: new Date().toLocaleDateString('fr-FR'),
+    items: app.state.items.map(({ uid, ...reste }) => reste),
+  });
+  writeSaves(saves.slice(0, 50));
+  toast(`« ${nom.trim()} » enregistrée`);
+}
+
+function exportSaves() {
+  const saves = loadSaves();
+  if (!saves.length) return toast('Aucune configuration à exporter', true);
+  download(slug(app.lib.name) + '-configurations.json', JSON.stringify({
+    format: 'configurateur-planet-fitness-pro/configurations',
+    library: app.lib.name,
+    exportedAt: new Date().toISOString(),
+    saves,
+  }, null, 2), 'application/json');
+}
+
+async function importSaves(file) {
+  try {
+    const data = JSON.parse(await file.text());
+    const entrantes = Array.isArray(data) ? data : (data.saves || []);
+    const valides = entrantes.filter(s => s && Array.isArray(s.items));
+    if (!valides.length) return toast('Fichier sans configuration', true);
+
+    const saves = loadSaves();
+    const connus = new Set(saves.map(s => s.id));
+    let ajoutees = 0;
+    for (const s of valides) {
+      if (connus.has(s.id)) continue;
+      saves.push({ ...s, id: s.id || 's' + Date.now().toString(36) + ajoutees });
+      ajoutees++;
+    }
+    writeSaves(saves.slice(0, 50));
+    toast(`${ajoutees} configuration(s) importée(s)`);
+  } catch (e) {
+    toast('Fichier illisible', true);
+  }
+}
+
 /* ══════════════════ matériaux ══════════════════
    La palette vient de Rhino : on ne la réinvente pas, on l'applique.
    ============================================== */
@@ -723,6 +857,15 @@ function wireUI() {
     app._topView = !app._topView;
     app.viewer.setView(app._topView ? 'top' : 'iso');
   };
+  $('#btn-save').onclick = saveCurrent;
+  $('#btn-save-export').onclick = exportSaves;
+  $('#btn-save-import').onclick = () => $('#saves-file').click();
+  $('#saves-file').onchange = e => {
+    const file = e.target.files?.[0];
+    if (file) importSaves(file);
+    e.target.value = '';
+  };
+
   $('#sel-color').oninput = e => {
     const it = find(app.selected);
     if (!it) return;

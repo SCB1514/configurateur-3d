@@ -191,6 +191,17 @@
       <small class="disclaimer">Matériaux relevés dans Rhino. Cliquez-en un pour l'appliquer à l'élément sélectionné.</small>
     </section>
 
+    <section class="section" id="saves-box">
+      <h4>Mes configurations</h4>
+      <ul class="saves" id="saves-list"></ul>
+      <div class="btn-row">
+        <button class="btn" id="btn-save" title="Enregistrer la configuration en cours">Enregistrer</button>
+        <button class="btn" id="btn-save-export" title="Exporter toutes mes configurations">Exporter</button>
+        <button class="btn" id="btn-save-import" title="Importer un fichier de configurations">Importer</button>
+      </div>
+      <input type="file" id="saves-file" accept=".json" hidden />
+    </section>
+
     <section class="section grow">
       <h4>Nomenclature</h4>
       <ul class="bom" id="bom"><li class="empty">Aucun élément. Choisissez un bloc dans le catalogue.</li></ul>

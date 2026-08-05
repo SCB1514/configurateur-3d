@@ -228,6 +228,20 @@ kbd{background:var(--panel-2);border:1px solid var(--line);border-radius:4px;pad
 .swatch.on{border-color:#fff}
 .sel-meta{font-size:11px;color:var(--txt-dim);margin-top:8px;line-height:1.5}
 
+.saves{list-style:none;margin:0 0 8px;padding:0;display:flex;flex-direction:column;gap:4px;
+  max-height:160px;overflow-y:auto}
+.saves li{
+  display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:7px;
+  background:var(--panel-2);border:1px solid transparent;font-size:12px;
+}
+.saves li:hover{border-color:var(--accent)}
+.saves li.empty{background:none;color:var(--txt-dim);font-size:11.5px;padding:0}
+.saves .nom{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.saves .quand{color:var(--txt-dim);font-size:10.5px;flex:0 0 auto}
+.saves .act{background:none;border:0;color:var(--txt-dim);cursor:pointer;padding:0 3px;font-size:12px;flex:0 0 auto}
+.saves .act:hover{color:var(--accent)}
+.saves .act.sup:hover{color:var(--danger)}
+
 .bom{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
 .bom li{
   display:flex;align-items:center;gap:10px;padding:8px;border-radius:8px;background:var(--panel-2);
