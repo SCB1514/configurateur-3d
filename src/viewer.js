@@ -22,6 +22,7 @@ export class Viewer {
     this.snap = true;
     this.ghost = null;
     this.selected = null;
+    this.selection = [];
     this._materials = new Map();
 
     /* ---------- renderer ---------- */
@@ -101,7 +102,8 @@ export class Viewer {
     this.gizmo.setSize(0.85);
     this.gizmo.addEventListener('dragging-changed', e => {
       this.controls.enabled = !e.value;
-      if (!e.value) { this.clearSnapHints(); this.hooks.onCommit?.(); }
+      if (e.value) this._depart = this.selected ? this.selected.position.clone() : null;
+      else { this._depart = null; this.clearSnapHints(); this.hooks.onCommit?.(); }
     });
     this.gizmo.addEventListener('objectChange', () => this._readTransform());
     this.gizmo.visible = false;
@@ -191,7 +193,10 @@ export class Viewer {
   _loop = () => {
     requestAnimationFrame(this._loop);
     this.controls.update();
-    if (this.selected) this.selBox.box.setFromObject(this.selected);
+    if (this.selected) {
+      const b = this.boundsOf(this.selection);
+      if (b) this.selBox.box.copy(b);
+    }
     this.renderer.render(this.scene, this.camera);
   };
 
@@ -301,12 +306,10 @@ export class Viewer {
     if (!obj) return;
     const block = this.lib.block(obj.userData.blockId);
 
-    // pendant un déplacement, le magnétisme reprend la main sur la grille
-    if (this.tool === 'translate' && this.magnet && block?.connectors.length) {
-      const snap = this.computeSnap(block, obj.position, obj.rotation.z / DEG, obj.userData.uid);
-      if (snap) { obj.position.copy(snap.origin); obj.rotation.z = snap.yaw * DEG; }
-      this.showSnapHints(block, snap, obj.userData.uid);
-    }
+    // Déplacement de groupe : pas encore fiable, le report de l'écart sur les
+    // voisins se cumulait d'une image à l'autre. Le gizmo ne déplace donc que
+    // l'élément tenu ; la sélection multiple sert au cadre coté, à la
+    // duplication et à la suppression.
 
     const off = block?.baseOffset || 0;
     let z = obj.position.z - off;
@@ -317,21 +320,36 @@ export class Viewer {
     });
   }
 
-  /* ══════════ sélection ══════════ */
-  select(uid) {
-    const obj = uid ? this.objects.get(uid) : null;
+  /* ══════════ sélection ══════════
+     Plusieurs éléments peuvent être choisis. Le gizmo reste accroché au
+     dernier désigné, mais tout déplacement s'applique à l'ensemble ; le
+     cadre, lui, est unique et englobe le groupe.
+     ============================== */
+  select(uid, additive = false) {
+    if (!uid) this.selection = [];
+    else if (!additive) this.selection = [uid];
+    else if (this.selection.includes(uid)) this.selection = this.selection.filter(u => u !== uid);
+    else this.selection = [...this.selection, uid];
+
+    const dernier = this.selection[this.selection.length - 1];
+    const obj = dernier ? this.objects.get(dernier) : null;
     this.selected = obj || null;
+
     if (obj) {
       if (this.editable !== false) { this.gizmo.attach(obj); this.gizmo.visible = true; }
-      this.selBox.box.setFromObject(obj);
+      this.selBox.box.copy(this.boundsOf(this.selection) ?? new THREE.Box3());
       this.selBox.visible = true;
     } else {
       this.gizmo.detach();
       this.gizmo.visible = false;
       this.selBox.visible = false;
     }
-    this.hooks.onSelect?.(obj ? obj.userData.uid : null);
+
+    this.hooks.onSelect?.(obj ? obj.userData.uid : null, this.selection);
   }
+
+  /** Les objets actuellement choisis. */
+  get selectedUids() { return this.selection || []; }
 
   setTool(tool) {
     this.tool = tool;
@@ -662,8 +680,9 @@ export class Viewer {
     this._setPointer(ev);
     this.ray.setFromCamera(this.pointer, this.camera);
     const hits = this.ray.intersectObjects([...this.objects.values()], true);
-    if (hits.length) this.select(rootOf(hits[0].object, this.scene).userData.uid);
-    else this.select(null);
+    const additif = ev.ctrlKey || ev.shiftKey || ev.metaKey;
+    if (hits.length) this.select(rootOf(hits[0].object, this.scene).userData.uid, additif);
+    else if (!additif) this.select(null);
   }
 
   /* ══════════ points d'accroche visibles ══════════

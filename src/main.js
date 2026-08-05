@@ -27,6 +27,7 @@ const app = {
   filter: { text: '', category: null },
   compat: null,          // {uid, blockName, types:[…]} — panneau « compatibles »
   showDims: false,       // cotes de la sélection
+  selection: [],         // uid des éléments choisis
   viewonly: params.get('view') === '1',
   embed: params.get('embed') === '1',
   config: {},
@@ -48,7 +49,7 @@ async function boot() {
 
   app.viewer = new Viewer($('#canvas'), {
     onPlace: item => placeItem(item),
-    onSelect: uid => onSelect(uid),
+    onSelect: (uid, selection) => onSelect(uid, selection),
     onTransform: (uid, patch) => {
       const it = find(uid);
       if (it) { Object.assign(it, patch); refreshSelectionPanel(); refreshDimensions(); scheduleSave(); }
@@ -428,23 +429,35 @@ function placeItem(partial) {
 const find = uid => app.state.items.find(i => i.uid === uid);
 
 function deleteSelected() {
-  if (!app.selected) return;
-  if (app.compat?.uid === app.selected) clearCompatible();
-  app.state.items = app.state.items.filter(i => i.uid !== app.selected);
-  app.viewer.removeItem(app.selected);
+  const uids = app.selection?.length ? app.selection : (app.selected ? [app.selected] : []);
+  if (!uids.length) return;
+  if (app.compat && uids.includes(app.compat.uid)) clearCompatible();
+
+  app.state.items = app.state.items.filter(i => !uids.includes(i.uid));
+  for (const uid of uids) app.viewer.removeItem(uid);
   app.viewer.select(null);
   pushHistory();
   refreshAll();
 }
 
 function duplicateSelected() {
-  const it = find(app.selected);
-  if (!it) return;
+  const uids = app.selection?.length ? app.selection : (app.selected ? [app.selected] : []);
+  if (!uids.length) return;
+
   const step = app.viewer.gridStep * 2;
-  const copy = { ...it, uid: newUid(), pos: [it.pos[0] + step, it.pos[1] + step, it.pos[2]] };
-  app.state.items.push(copy);
-  app.viewer.addItem(copy);
-  app.viewer.select(copy.uid);
+  const copies = [];
+  for (const uid of uids) {
+    const it = find(uid);
+    if (!it) continue;
+    const copy = { ...it, uid: newUid(), pos: [it.pos[0] + step, it.pos[1] + step, it.pos[2]] };
+    app.state.items.push(copy);
+    app.viewer.addItem(copy);
+    copies.push(copy.uid);
+  }
+  if (!copies.length) return;
+
+  app.viewer.select(copies[0]);
+  for (const uid of copies.slice(1)) app.viewer.select(uid, true);
   pushHistory();
   refreshAll();
 }
@@ -723,16 +736,17 @@ function renderMaterials() {
 }
 
 /* ══════════════════ sélection ══════════════════ */
-function onSelect(uid) {
+function onSelect(uid, selection) {
   app.selected = uid;
+  app.selection = selection || (uid ? [uid] : []);
   refreshSelectionPanel();
   refreshDimensions();
 }
 
 /** Encadré coté autour de la sélection — un seul cadre, même à plusieurs. */
 function refreshDimensions() {
-  if (!app.showDims || !app.selected) { app.viewer.clearDimensions(); return; }
-  const uids = [app.selected];
+  const uids = app.selection || [];
+  if (!app.showDims || !uids.length) { app.viewer.clearDimensions(); return; }
   const box = app.viewer.boundsOf(uids);
   const nom = uids.length > 1
     ? `${uids.length} éléments`
@@ -744,9 +758,21 @@ function refreshSelectionPanel() {
   const box = $('#selection-box');
   const it = find(app.selected);
   if (!it) { box.classList.add('hidden'); return; }
+
+  // À plusieurs, on annonce l'ensemble et son encombrement global.
+  const multiple = (app.selection || []).length > 1;
+  const entete = $('#sel-name');
+  if (multiple) {
+    const b = app.viewer.boundsOf(app.selection);
+    const k = app.lib.scale;
+    const d = b ? [b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z]
+        .map(v => Math.round(v / k)).join(' × ') + ' ' + app.lib.units : '';
+    box.classList.remove('hidden');
+    entete.textContent = `${app.selection.length} éléments — ${d}`;
+  }
   const b = app.lib.block(it.blockId);
   box.classList.remove('hidden');
-  $('#sel-name').textContent = b.name;
+  if (!multiple) entete.textContent = b.name;
   $('#sel-rot').value = r(it.rot || 0);
   $('#sel-z').value = r(it.pos[2] / app.lib.scale);
   let pts = '';
