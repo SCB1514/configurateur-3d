@@ -1,393 +1,149 @@
-# Configurateur 3D à partir de blocs Rhino
+# Configurateur Planet Fitness Pro
 
-Application web qui laisse n'importe qui composer en 3D, dans son navigateur, à partir
-d'une **bibliothèque de blocs Rhino pré-enregistrés** — puis partager le résultat
-par un simple lien.
+Visualisateur 3D en ligne d'équipements de musculation. Le client compose son plateau
+dans son navigateur, à partir d'un catalogue préparé dans Rhino, puis partage un lien
+ou demande un devis.
+
+**Tout se pilote depuis Rhino.** Le plug-in
+[`ConfigurateurPlanetFitnessPro`](../../ConfigurateurPlanetFitnessPro/README.md)
+(dossier `C:\Users\Shadow\Downloads\ConfigurateurPlanetFitnessPro`) gère la bibliothèque,
+les coloris, les dispositions types et la mise en ligne. Ce dossier-ci n'est que le site
+publié : vous n'avez normalement jamais à y toucher.
 
 ```
-Rhino (.3dm, blocs équipés de « Points d'insertion A / B / C »)
-        │
-        │  commande  PublierBibliotheque
-        ▼
-   GitHub  ──►  Actions  ──►  GitHub Pages  ──►  configurateur en ligne
-                                                        │
-                                                        ├─► lien partageable   …/#c=zXY…
-                                                        ├─► iframe intégrable sur votre site
-                                                        ├─► image PNG / maillage OBJ
-                                                        └─► composition.json ──► ImporterComposition ──► Rhino
+Rhino 8  ─  plug-in Configurateur Planet Fitness Pro
+   │         panneaux : Bibliothèque · Variantes · Dispositions · Publication
+   │
+   │  bouton « Publier en ligne »
+   ▼
+hébergement  ──►  site public  ──►  lien envoyé au client
+                                          │
+                                          ├─► composition partagée par lien
+                                          ├─► iframe sur votre site
+                                          ├─► image, OBJ, devis
+                                          └─► composition JSON ──► réimport dans Rhino
 ```
 
-Les blocs se **magnétisent** entre eux par leurs points d'insertion, et un
-**clic droit** sur un bloc posé ne propose que ce qui peut s'y connecter.
+## Ce que voit le client
 
-Aucun serveur applicatif, aucune base de données : ce sont des fichiers statiques.
-**La configuration entière est encodée dans l'URL** (compressée), donc un lien suffit
-à rejouer exactement la composition chez le destinataire.
+- Un **catalogue** d'équipements rangés par famille, avec aperçu, référence et prix.
+- Des **dispositions types** préparées dans Rhino — plateau cardio, circuit guidé,
+  club complet — qu'il charge d'un clic comme point de départ.
+- Le **magnétisme** : deux machines porteuses du même point d'insertion se rejoignent
+  exactement, alignées et orientées.
+- Le **clic droit** sur une machine posée : le catalogue ne montre plus que ce qui peut
+  s'y raccorder, et un clic pose l'équipement déjà connecté.
+- Les **coloris** : chaque machine peut proposer plusieurs teintes de capotage.
+- La **nomenclature** et le total, mis à jour en direct, avec demande de devis.
 
----
-
-## 1. Démarrer en local
+## Démarrer en local
 
 ```bash
 python configurateur-3d/tools/serve.py
 ```
 
-Puis ouvrir <http://localhost:5180>. Une bibliothèque de démonstration
-(cuisine modulaire, 17 blocs, points d'insertion A/B/C/D/E) est déjà fournie.
-
-> Un serveur est nécessaire : les modules ES et `fetch()` ne fonctionnent pas
-> en `file://`. `tools/serve.py` désactive le cache, pratique en développement.
-
----
-
-## 1 bis. Publier depuis Rhino (le circuit court)
-
-Le dossier [`rhino/`](rhino/) est un petit plugin Python : cinq commandes
-installées en une fois par `_RunPythonScript` → `rhino/installer.py`.
-
-```
-PointInsertion          poser les points d'accroche A / B / C sur la géométrie
-_Block                  créer le bloc produit (géométrie + points)
-VerifierBibliotheque    contrôler noms, connexions, blocs orphelins
-PublierBibliotheque     envoi GitHub → le site public se met à jour tout seul
-ImporterComposition     relire la composition d'un client dans Rhino
-```
-
-`PublierBibliotheque` écrit `data/library.json` dans le dépôt via l'API GitHub
-(aucun `git` ni `gh` requis), ce qui déclenche le workflow
-[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) : contrôle du
-fichier puis redéploiement de GitHub Pages, en 30 à 60 secondes.
-
-Le jeton d'accès est stocké dans `%APPDATA%\Configurateur3D\publication.json`,
-**hors du dépôt**. Mode d'emploi complet : [rhino/README.md](rhino/README.md).
-
-### Mise en place du dépôt
-
-```bash
-cd configurateur-3d
-git remote add origin https://github.com/VOUS/configurateur-3d.git
-git push -u origin main
-```
-
-Puis sur GitHub : *Settings → Pages → Source : **GitHub Actions***.
-Le site est publié sur `https://VOUS.github.io/configurateur-3d/`.
-
----
-
-## 2. Mettre en ligne (autres hébergeurs)
-
-N'importe quel hébergement statique convient — glisser le dossier `configurateur-3d`
-sur **Netlify Drop**, **Vercel**, **GitHub Pages**, ou dans un dossier de votre
-serveur web. Le lien de partage reprend automatiquement l'adresse publique.
-
-> **Google Drive ne peut pas héberger la page elle-même.** Google a supprimé
-> l'hébergement web de Drive en 2016, et le contournement le plus connu
-> (DriveToWeb) a fermé le 31 mai 2026. En revanche, Drive convient très bien
-> pour héberger **la bibliothèque de blocs** : voir la section 3.
-
----
-
-## 2 bis. Bibliothèque dans un dossier Google Drive
-
-L'application sait lire ses blocs directement dans **un dossier Drive, et un seul**.
-Vous déposez vos `library.json` dans ce dossier, vous les mettez à jour quand vous
-voulez : le configurateur en ligne suit, sans redéploiement.
-
-### Mise en place (10 minutes)
-
-1. **Créer le dossier** dans votre Drive, par exemple `Bibliothèque configurateur`,
-   et y déposer le `library.json` produit par le script d'export Rhino.
-   Vous pouvez en mettre plusieurs (`cuisine.json`, `bureau.json`…) : un sélecteur
-   apparaît alors en haut du catalogue.
-2. **Partager le dossier** : *Partager → Accès général → Tous les utilisateurs
-   disposant du lien → Lecteur*. Indispensable : vos clients ne sont pas connectés
-   à Google.
-3. **Créer une clé API** sur <https://console.cloud.google.com> :
-   *API et services → Activer l'API Google Drive*, puis *Identifiants → Créer une
-   clé API*. **Restreindre la clé** : référents HTTP = le domaine de votre site,
-   API autorisées = Google Drive uniquement.
-4. **Renseigner `config.json`** (modèle prêt : `config.drive.exemple.json`) :
-
-```json
-{
-  "source": {
-    "type": "drive",
-    "folderId": "https://drive.google.com/drive/folders/1AbC…",
-    "apiKey": "AIza…",
-    "libraryFile": "library.json"
-  }
-}
-```
-
-5. **Vérifier avant mise en ligne** — le script rejoue exactement ce que fera le
-   navigateur du visiteur (listing, contrôle du dossier parent, téléchargement,
-   validation du contenu) :
-
-```bash
-python tools/check_drive_folder.py
-```
-
-### Périmètre d'accès — ce qui est garanti, et ce qui ne l'est pas
-
-Le bouton **Confidentialité** en bas du catalogue affiche ce tableau au visiteur.
-
-**Garanti par le code et par le navigateur :**
-
-| | |
-|---|---|
-| Un seul dossier | chaque fichier renvoyé par Google est recontrôlé côté client : s'il n'a pas votre dossier dans ses `parents`, il est écarté. Les sous-dossiers ne sont pas parcourus. |
-| Aucun téléchargement arbitraire | seuls les identifiants issus du listing de ce dossier sont téléchargeables ; un autre identifiant est refusé **sans même émettre de requête**. |
-| Le reste de votre Drive est hors d'atteinte | l'application ne demande jamais de connexion Google ni de jeton OAuth. Une clé API ne donne accès qu'aux fichiers publics. |
-| Aucune écriture | le module Drive n'a aucune méthode d'écriture ; rien ne peut être modifié ni supprimé. |
-| Aucune fuite ailleurs | la politique CSP de `index.html` n'autorise que votre site et `www.googleapis.com`. Tout autre appel réseau — CDN, traceur, autre API Google — est bloqué par le navigateur. Aucun script tiers ne peut être chargé (Three.js est embarqué dans `vendor/`). |
-| Rien n'est envoyé automatiquement | la composition reste dans le navigateur ; les exports et le devis partent du poste du client. |
-
-**Ce qui n'est PAS garanti — à savoir avant de publier :** un dossier partagé
-« toute personne disposant du lien » est **non répertorié, pas confidentiel**.
-La clé API et l'identifiant du dossier sont lisibles dans le code de la page :
-quelqu'un de motivé peut donc télécharger les `library.json` de ce dossier —
-et rien d'autre. **N'y mettez que ce que vous acceptez de montrer à un prospect :
-la bibliothèque publiée, jamais vos `.3dm`, vos tarifs internes ou vos projets clients.**
-
-Si la bibliothèque elle-même doit rester privée, il faut une authentification :
-hébergez le `library.json` derrière l'accès protégé de votre site (`type: "static"`,
-le fichier est alors servi par votre serveur, qui décide qui y a droit).
-
----
-
-## 3. Publier votre propre bibliothèque depuis Rhino
-
-### 3.1 Préparer le fichier Rhino
-
-1. Modélisez chaque élément puis transformez-le en **bloc** (`_Block`).
-   Le **point de base** du bloc devient son point d'accroche dans le configurateur —
-   choisissez-le au centre de l'emprise, au niveau du sol.
-2. Orientez les blocs dans le repère Rhino habituel (Z vers le haut) ;
-   le configurateur conserve exactement le même repère et les mêmes unités.
-3. Les définitions dont le nom commence par `_` sont ignorées à l'export.
-
-### 3.2 Renseigner catégorie, prix, finitions
-
-Deux méthodes, cumulables.
-
-**a) Attributs utilisateur** posés sur un objet *à l'intérieur* du bloc
-(Propriétés → Attributs utilisateur) :
-
-| Clé | Effet |
-|---|---|
-| `categorie` | onglet du catalogue |
-| `prix` | prix unitaire (nombre) |
-| `ref` | référence commerciale |
-| `description` | texte de l'infobulle |
-| `finition` | `1` sur les pièces dont la couleur suit la finition choisie |
-| `empilable` | `0` pour interdire l'empilement |
-
-**b) Fichier `catalogue.csv`** placé à côté du `.3dm` (prioritaire) :
-
-```csv
-bloc;categorie;prix;ref;description;finitions
-Caisson bas 600;Caissons bas;222;CB-600;Caisson 2 portes;Blanc:#eeece7|Chêne:#c69b63
-Plan de travail 1200;Plans;187;PT-1200;Stratifié 38 mm;Noir:#2c3036|Béton:#9aa0a6
-```
-
-Sans finition déclarée, le bloc garde les couleurs d'affichage de Rhino
-(couleur d'objet ou de calque).
-
-### 3.3 Exporter
-
-Dans Rhino : `_RunPythonScript` → `rhino/export_blocks_to_library.py`.
-Le script maille toutes les définitions de blocs (Brep, extrusions, SubD, maillages,
-blocs imbriqués), regroupe les faces par couleur et écrit un `library.json`.
-
-Copiez le fichier obtenu dans `configurateur-3d/data/library.json`,
-ou déposez-le dans votre dossier Google Drive de bibliothèque (section 2 bis).
-
-**Poids :** comptez ~5 à 40 Ko par bloc. Au-delà de ~8 Mo, réglez
-`MESH_QUALITY = "coarse"` en tête du script, ou simplifiez les blocs
-(les congés, vis et détails millimétriques n'apportent rien à l'écran).
-
-### 3.4 Récupérer la composition dans Rhino
-
-Le client clique **JSON** → il vous envoie `…-composition.json`.
-Dans Rhino : `_RunPythonScript` → `rhino/import_composition.py`, choisir le fichier.
-Les instances de blocs sont reposées à l'identique (position, rotation, échelle)
-sur le calque *Configuration importée*, prêtes pour le chiffrage ou les plans.
-
----
-
-## 4. Personnalisation
-
-`config.json`, à la racine :
-
-```json
-{
-  "title":      "Cuisine modulaire",
-  "brand":      "Ma société",
-  "quoteEmail": "contact@ma-societe.fr",
-  "priceNote":  "Estimation indicative, hors pose et livraison.",
-  "source":     { "type": "static", "library": "data/library.json" }
-}
-```
-
-`source.type` vaut `static` (fichier servi par le site) ou `drive`
-(un dossier Google Drive — section 2 bis). Il n'existe pas d'autre mode :
-une URL externe arbitraire est refusée par `library.js`.
-
-Couleurs de l'interface : variables CSS en tête de `assets/style.css`
-(`--accent`, `--bg`, `--panel`…).
-
-### Paramètres d'URL
-
-| Paramètre | Effet |
-|---|---|
-| `?lib=…` | choisit une bibliothèque **parmi celles de la source** (chemin configuré, ou identifiant d'un fichier du dossier Drive) |
-| `?view=1` | lecture seule (le visiteur peut basculer en édition d'un clic) |
-| `?embed=1` | masque le catalogue — pour l'iframe |
-| `#c=…` | la configuration elle-même |
-
-Intégration sur un site (bouton **Partager le lien** → *Intégrer sur un site*) :
-
-```html
-<iframe src="https://…/?view=1&embed=1#c=zXY…"
-        width="100%" height="620" style="border:0" allowfullscreen></iframe>
-```
-
----
-
-## 5. Utilisation
-
-### Le magnétisme des points d'insertion
-
-Chaque bloc peut porter des points d'insertion (`A`, `B`, `C`…), définis dans
-Rhino comme des blocs imbriqués. Deux blocs porteurs de la **même lettre** se
-rejoignent : les points se superposent exactement, et les axes Z se mettent en
-vis-à-vis.
-
-- Approchez un bloc d'un point compatible : il se cale tout seul, un **anneau
-  vert** marque la connexion et les points libres compatibles apparaissent en
-  vert dans la scène.
-- Un point horizontal aligne aussi la rotation — deux meubles côte à côte gardent
-  leur façade du même côté. Un point vertical n'impose que la hauteur.
-- Le bouton **aimant** de la barre d'outils désactive le magnétisme si besoin.
-- Les vignettes du catalogue affichent les lettres portées par chaque bloc.
-
-### Clic droit : uniquement ce qui peut se connecter
-
-**Clic droit sur un bloc posé** → le catalogue ne montre plus que les blocs
-partageant un de ses points d'insertion **encore libres**. Un clic sur l'un
-d'eux le pose directement à sa place, connecté, sans viser à la souris — et le
-panneau enchaîne aussitôt sur le nouveau bloc. C'est la façon la plus rapide de
-dérouler une implantation complète.
-
-<kbd>Échap</kbd> ou ✕ pour revenir au catalogue complet.
-
-### Gestes
+<http://localhost:5180> — une bibliothèque de démonstration (13 équipements,
+4 dispositions) est fournie pour montrer le configurateur avant d'y publier le vrai
+catalogue.
+
+## Gestes
 
 | Action | Geste |
 |---|---|
-| Poser un bloc | clic sur une vignette, puis clic dans la scène |
+| Charger une disposition | menu « Partir d'une disposition », puis *Charger* |
+| Poser une machine | clic sur une vignette, puis clic dans la scène |
 | Poser en série | maintenir <kbd>Maj</kbd> au moment de poser |
-| Blocs compatibles | **clic droit** sur un bloc posé |
-| Empiler | survoler la face supérieure d'un bloc déjà posé (hauteur exacte) |
-| Sélectionner | clic sur un bloc |
-| Déplacer / pivoter | flèches du gizmo, ou <kbd>G</kbd> / <kbd>R</kbd> |
-| Pivoter de 90° | <kbd>R</kbd> (<kbd>Maj+R</kbd> dans l'autre sens) |
-| Dupliquer | <kbd>D</kbd> · Supprimer <kbd>Suppr</kbd> |
+| Machines compatibles | **clic droit** sur une machine posée |
+| Déplacer / pivoter | gizmo, ou <kbd>G</kbd> / <kbd>R</kbd> |
+| Dupliquer · Supprimer | <kbd>D</kbd> · <kbd>Suppr</kbd> |
 | Annuler / rétablir | <kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd> |
 | Recadrer | <kbd>F</kbd> |
 
-Le panneau de droite tient à jour la **nomenclature**, l'encombrement et le
-**total estimé** ; le bouton *Demander un devis* prépare un e-mail contenant le
-récapitulatif et le lien 3D. La configuration en cours est sauvegardée
-automatiquement dans le navigateur.
+Deux aimants indépendants dans la barre d'outils : celui des **points d'insertion**
+(machines entre elles) et celui de la **grille** (pas de 100 mm par défaut).
 
----
+## Format publié
 
-## 6. Format `library.json`
+Le plug-in écrit `data/library.json`. Sa structure, si vous devez la produire autrement :
 
 ```jsonc
 {
-  "name": "Ma gamme", "units": "mm", "currency": "€",
-  "priceEnabled": true, "gridStep": 50,          // pas d'aimantation, en unités biblio
-  "categories": [{ "id": "Caissons", "name": "Caissons" }],
-  "connectorTypes": [{ "id": "A", "name": "A — liaison latérale" }],
+  "name": "…", "units": "mm", "gridStep": 100, "currency": "€", "priceEnabled": true,
+  "categories":     [{ "id": "Cardio", "name": "Cardio" }],
+  "connectorTypes": [{ "id": "A", "name": "A — alignement latéral" }],
+  "presets": [{                                   // dispositions types
+    "id": "cardio", "name": "Plateau cardio", "featured": true,
+    "items": [{ "blockId": "tapis-course", "pos": [0,0,0], "rot": 0 }]
+  }],
   "blocks": [{
-    "id": "caisson-bas-600", "name": "Caisson bas 600",
-    "category": "Caissons", "price": 222, "ref": "CB-600",
-    "description": "600 × 580 × 820 mm",
-    "finishes": [{ "id": "chene", "name": "Chêne", "color": "#c69b63" }],
-    "connectors": [                              // les points d'insertion
-      { "type": "A", "pos": [-300, 0, 410], "dir": [-1, 0, 0] },
-      { "type": "A", "pos": [ 300, 0, 410], "dir": [ 1, 0, 0] },
-      { "type": "B", "pos": [   0, 0, 820], "dir": [ 0, 0, 1] }
-    ],
-    "meshes": [{
-      "color": "#e8e6e1", "opacity": 1, "paintable": true,
-      "positions": [x,y,z, …], "normals": [nx,ny,nz, …], "indices": [a,b,c, …]
-    }]
+    "id": "tapis-course", "name": "Tapis de course", "category": "Cardio",
+    "price": 4290, "ref": "PF-TC-01", "description": "…",
+    "finishes":   [{ "id": "violet", "name": "Violet", "color": "#5B2D8E" }],
+    "connectors": [{ "type": "A", "pos": [-950,0,400], "dir": [-1,0,0] }],
+    "meshes":     [{ "color": "#2C3038", "paintable": true,
+                     "positions": [], "normals": [], "indices": [] }]
   }]
 }
 ```
 
-`pos` est exprimé dans l'unité de la bibliothèque, dans le repère local du bloc ;
-`dir` est l'axe Z du point, orienté vers l'extérieur. Validez un fichier avec :
+`pos` est dans l'unité de la bibliothèque, dans le repère local du bloc ; `dir` est l'axe
+du point d'insertion, orienté vers l'extérieur. Un maillage `paintable` suit le coloris
+choisi par le client. Validation :
 
 ```bash
 python tools/check_library.py data/library.json
 ```
 
-Le format est volontairement trivial : n'importe quelle autre source
-(Grasshopper, script maison, autre modeleur) peut produire ce fichier.
-`tools/gen_demo_library.py` en est un exemple complet et exécutable.
+## Réglages du site
 
----
+`config.json` : titre, marque, e-mail de devis, mention de prix, et source des blocs
+(`static` = fichier du site, `drive` = un dossier Google Drive — voir
+`config.drive.exemple.json`).
 
-## 7. Structure
+| Paramètre d'URL | Effet |
+|---|---|
+| `?view=1` | lecture seule, le visiteur peut basculer en édition d'un clic |
+| `?embed=1` | masque le catalogue, pour l'iframe |
+| `#c=…` | la configuration elle-même, encodée dans le lien |
+
+## Structure
 
 ```
 configurateur-3d/
 ├── index.html              interface + politique CSP (périmètre réseau)
-├── config.json             marque, source des blocs, e-mail de devis
-├── config.drive.exemple.json   modèle pour une source Google Drive
+├── config.json             titre, marque, devis, source des blocs
 ├── assets/style.css
 ├── src/
-│   ├── main.js             état, sources, catalogue, compatibles, devis
+│   ├── main.js             état, catalogue, dispositions, compatibles, devis
 │   ├── viewer.js           scène Three.js (Z-up), pose, magnétisme, gizmo
-│   ├── library.js          lecture du library.json → géométries + connecteurs
-│   ├── drive.js            accès Drive borné à un dossier (voir en-tête du fichier)
-│   ├── thumbnails.js       vignettes du catalogue, rendues à la volée
+│   ├── library.js          lecture du library.json → géométries, connecteurs, presets
+│   ├── drive.js            source Google Drive bornée à un dossier
+│   ├── thumbnails.js       vignettes du catalogue
 │   ├── share.js            configuration ⇄ URL (deflate + base64url)
-│   └── exporters.js        PNG, composition JSON, OBJ, récapitulatif
-├── vendor/three/           Three.js embarqué (aucun CDN, aucun script tiers)
-├── data/library.json       bibliothèque publiée (démo fournie)
-├── rhino/                  le « plugin » : 5 commandes Rhino — voir rhino/README.md
-│   ├── installer.py                   installe les alias de commandes
-│   ├── configurateur_lib.py           moteur : points d'insertion, maillage, publication
-│   ├── cmd_point_insertion.py         poser les points A / B / C
-│   ├── cmd_verifier.py                contrôle avant publication
-│   ├── cmd_exporter.py                library.json sur le disque
-│   ├── cmd_publier.py                 publication GitHub en un clic
-│   └── cmd_importer.py                composition client → Rhino
-├── .github/workflows/deploy.yml       contrôle + déploiement GitHub Pages
+│   └── exporters.js        PNG, composition JSON, OBJ, devis
+├── vendor/three/           Three.js embarqué — aucun CDN, aucun script tiers
+├── data/library.json       catalogue publié
+├── .github/workflows/      contrôle puis mise en ligne automatique
 └── tools/
-    ├── serve.py                       serveur de développement sans cache
-    ├── gen_demo_library.py            bibliothèque de démonstration
-    ├── check_library.py               validation d'un library.json
-    └── check_drive_folder.py          diagnostic de la source Drive
+    ├── serve.py            serveur de développement sans cache
+    ├── gen_demo_library.py bibliothèque de démonstration
+    ├── check_library.py    validation d'un library.json
+    └── check_drive_folder.py
 ```
 
-Aucune dépendance réseau : Three.js est embarqué dans `vendor/three/`, et la
-politique CSP de `index.html` interdit au navigateur de charger quoi que ce soit
-d'autre que ce site et l'API Drive. L'application fonctionne hors-ligne en
-mode `static`.
+Aucune dépendance réseau : Three.js est embarqué et la politique CSP interdit au
+navigateur de charger quoi que ce soit d'autre que ce site.
 
-## 8. Limites connues
+> Les anciens scripts Python `rhino/` ont été retirés : le plug-in C# les remplace
+> intégralement et évite deux implémentations divergentes du même format.
 
-- Pas de gestion multi-utilisateurs ni de sauvegarde côté serveur : le lien est la donnée.
-  Au-delà de ~400 éléments, l'URL devient longue (préférez alors l'export JSON).
-- Le magnétisme ne corrige que la rotation **autour de Z**. Un bloc à poser
-  incliné (rampant, pente de toit) doit être orienté ainsi dans Rhino.
-- Pas de détection de collision générale : seul l'accrochage automatique par
-  clic droit évite de superposer deux blocs au même endroit.
+## Limites connues
+
+- Le magnétisme ne corrige que la rotation **autour de Z**. Une machine à poser inclinée
+  doit l'être dans Rhino.
+- Pas de détection de collision générale : seul l'accrochage par clic droit évite de
+  superposer deux machines.
 - Les matériaux Rhino ne sont pas transférés — seules les couleurs d'affichage le sont,
-  complétées par les finitions déclarées au catalogue.
+  complétées par les coloris déclarés dans le panneau Variantes.
+- Au-delà d'environ 400 machines, le lien de partage devient long : préférez alors
+  l'export JSON.

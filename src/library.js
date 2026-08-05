@@ -36,6 +36,23 @@ export class Library {
       if (block) { this.blocks.set(block.id, block); this.order.push(block.id); }
     }
 
+    // dispositions types préparées dans Rhino : positions ramenées en mètres
+    this.presets = (raw.presets || []).map(p => ({
+      id: String(p.id || ''),
+      name: p.name || 'Disposition',
+      description: p.description || '',
+      featured: !!p.featured,
+      items: (p.items || []).map(i => {
+        const pos = i.pos || [0, 0, 0];
+        return {
+          blockId: String(i.blockId || ''),
+          pos: [pos[0] * this.scale, pos[1] * this.scale, pos[2] * this.scale],
+          rot: Number(i.rot) || 0,
+          finish: i.finish || null,
+        };
+      }).filter(i => i.blockId),
+    })).filter(p => p.items.length);
+
     // catégories déduites si absentes du fichier
     if (!this.categories.length) {
       const seen = new Map();

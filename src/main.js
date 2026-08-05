@@ -135,7 +135,7 @@ async function activateLibrary(key) {
   app.libKey = entry.key;
   app.viewer.setLibrary(lib);
 
-  document.title = (app.config.title || lib.name) + ' — Configurateur 3D';
+  document.title = app.config.title || lib.name;
   $('#lib-name').textContent = app.config.brand || lib.name;
   $('#lib-sub').textContent = `${lib.list.length} blocs · unité ${lib.units}`
     + (app.drive ? ' · dossier Drive' : '');
@@ -148,6 +148,7 @@ async function activateLibrary(key) {
   $('#tip').classList.toggle('hidden', !hasConnectors);
 
   renderLibrarySwitch();
+  renderPresets();
   app.compat = null;
   $('#compat-bar').classList.add('hidden');
   app.filter = { text: '', category: null };
@@ -170,6 +171,64 @@ function renderLibrarySwitch() {
 }
 
 const prettyName = f => f.replace(/\.json$/i, '').replace(/[-_]+/g, ' ').trim();
+
+/* ══════════════════ dispositions types ══════════════════
+   Préparées dans Rhino, elles donnent au client un point de départ crédible
+   plutôt qu'une salle vide. Il les modifie ensuite librement.
+   ======================================================== */
+function renderPresets() {
+  const row = $('#preset-row'), select = $('#preset-select');
+  const list = app.lib.presets || [];
+  if (!list.length) { row.hidden = true; return; }
+
+  row.hidden = false;
+  select.innerHTML = '';
+  const blank = document.createElement('option');
+  blank.value = '';
+  blank.textContent = 'Salle vide';
+  select.appendChild(blank);
+
+  for (const preset of [...list].sort((a, b) => (b.featured ? 1 : 0) - (a.featured ? 1 : 0))) {
+    const option = document.createElement('option');
+    option.value = preset.id;
+    option.textContent = (preset.featured ? '★ ' : '') + preset.name
+      + ` — ${preset.items.length} machines`;
+    select.appendChild(option);
+  }
+  describePreset();
+}
+
+function describePreset() {
+  const preset = (app.lib.presets || []).find(p => p.id === $('#preset-select').value);
+  $('#preset-note').textContent = preset?.description || '';
+}
+
+function loadPreset(id) {
+  const preset = (app.lib.presets || []).find(p => p.id === id);
+  if (!preset) return;
+
+  if (app.state.items.length &&
+      !confirm(`Remplacer la configuration en cours par « ${preset.name} » ?`)) return;
+
+  app.state.items = preset.items
+    .filter(i => app.lib.block(i.blockId))
+    .map(i => ({
+      uid: newUid(),
+      blockId: i.blockId,
+      pos: [...i.pos],
+      rot: i.rot,
+      scale: 1,
+      finish: i.finish || app.lib.block(i.blockId).finishes[0]?.id || null,
+    }));
+
+  clearCompatible();
+  app.viewer.syncAll(app.state.items);
+  app.viewer.select(null);
+  app.viewer.fit();
+  pushHistory();
+  refreshAll();
+  toast(`« ${preset.name} » chargée — ${app.state.items.length} machines`);
+}
 
 /* ══════════════════ catalogue ══════════════════ */
 function renderCategories() {
@@ -612,6 +671,21 @@ function wireUI() {
     app._topView = !app._topView;
     app.viewer.setView(app._topView ? 'top' : 'iso');
   };
+  $('#preset-select').onchange = describePreset;
+  $('#btn-preset-load').onclick = () => {
+    const id = $('#preset-select').value;
+    if (!id) {
+      if (app.state.items.length && !confirm('Vider la configuration en cours ?')) return;
+      app.state.items = [];
+      clearCompatible();
+      app.viewer.clear();
+      pushHistory();
+      refreshAll();
+      return;
+    }
+    loadPreset(id);
+  };
+
   $('#compat-close').onclick = clearCompatible;
   $('#canvas').addEventListener('contextmenu', e => {
     e.preventDefault();

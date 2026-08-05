@@ -1,9 +1,8 @@
 {
-  "title": "Cuisine modulaire",
-  "brand": "Cuisine modulaire — démo",
+  "title": "Configurateur Planet Fitness Pro",
+  "brand": "Planet Fitness Pro",
   "quoteEmail": "contact@votre-entreprise.fr",
-  "priceNote": "Estimation indicative, hors pose et livraison.",
-
+  "priceNote": "Estimation indicative, hors installation et livraison.",
   "source": {
     "type": "static",
     "library": "data/library.json"

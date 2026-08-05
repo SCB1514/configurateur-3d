@@ -1,7 +1,7 @@
-name: Publier le configurateur
+name: Publier le Configurateur Planet Fitness Pro
 
 # Chaque envoi sur main republie le site.
-# La commande Rhino « PublierBibliotheque » ecrit data/library.json
+# Le plug-in Rhino « Configurateur Planet Fitness Pro » ecrit data/library.json
 # via l'API GitHub : ce workflow se declenche donc tout seul.
 
 on:

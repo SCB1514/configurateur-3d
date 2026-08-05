@@ -81,6 +81,18 @@ pre.csp{
 .chip:hover{color:var(--txt)}
 .chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
 
+/* ---------- dispositions types ---------- */
+.preset-row{padding:0 14px 10px;display:flex;flex-direction:column;gap:5px}
+.preset-row label{font-size:10px;letter-spacing:.9px;text-transform:uppercase;color:var(--txt-dim);font-weight:700}
+.preset-pick{display:flex;gap:6px}
+.preset-pick select{
+  flex:1 1 auto;min-width:0;padding:8px 10px;background:var(--panel-2);
+  border:1px solid var(--line);border-radius:8px;outline:none;cursor:pointer;
+}
+.preset-pick select:focus{border-color:var(--accent)}
+.btn.small{padding:0 12px;font-size:12px}
+#preset-note{color:var(--txt-dim);font-size:10.5px;line-height:1.4}
+
 /* ---------- barre « compatibles » ---------- */
 .compat-bar{
   display:flex;align-items:center;gap:8px;margin:0 12px 10px;padding:8px 10px;

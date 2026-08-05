@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Configurateur 3D</title>
+<title>Configurateur Planet Fitness Pro</title>
 
 <!-- ============================================================
      Périmètre réseau de l'application, appliqué par le navigateur.
@@ -45,6 +45,15 @@
 
     <div class="search-row" id="lib-switch-row" hidden>
       <select id="lib-switch" title="Bibliothèque du dossier"></select>
+    </div>
+
+    <div class="preset-row" id="preset-row" hidden>
+      <label for="preset-select">Partir d'une disposition</label>
+      <div class="preset-pick">
+        <select id="preset-select" title="Implantations préparées dans Rhino"></select>
+        <button class="btn small" id="btn-preset-load" title="Charger cette disposition">Charger</button>
+      </div>
+      <small id="preset-note"></small>
     </div>
 
     <div class="search-row">
