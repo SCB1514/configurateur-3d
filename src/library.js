@@ -105,18 +105,20 @@ export class Library {
     }
     if (!parts.length) return null;
 
-    /* --- points d'insertion : jamais dessinés, ils servent au magnétisme --- */
+    /* --- points d'accroche ---------------------------------------------
+       Le point PRINCIPAL est l'origine du bloc ; sa catégorie vient du
+       texte utilisateur « Point d'Insertion » de la définition Rhino.
+       Les points natifs placés ailleurs dans le bloc sont UNIVERSELS :
+       ils acceptent n'importe quelle catégorie.
+       ------------------------------------------------------------------ */
     const connectors = (raw.connectors || []).map((c, i) => {
       const p = c.pos || [0, 0, 0];
-      const d = c.dir || [0, 0, 1];
-      const dir = new THREE.Vector3(d[0], d[1], d[2]);
-      if (dir.lengthSq() < 1e-9) dir.set(0, 0, 1);
       return {
         index: i,
         type: String(c.type || 'A').toUpperCase(),
-        name: c.name || `Point d'insertion ${c.type || 'A'}`,
+        main: !!c.main,
+        name: c.name || (c.type === '*' ? 'Connecteur universel' : `Point d'insertion ${c.type || 'A'}`),
         pos: new THREE.Vector3(p[0], p[1], p[2]).multiplyScalar(s),
-        dir: dir.normalize(),
       };
     });
 

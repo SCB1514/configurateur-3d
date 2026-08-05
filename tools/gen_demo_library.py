@@ -138,11 +138,29 @@ COLORIS = [
 blocks = []
 
 
-def pi(kind, pos, direction):
-    """Point d'insertion : ce que le plug-in releve sur les blocs nommes
-    « Point d'insertion A / B / C »."""
-    return {"type": kind, "name": "Point d'insertion %s" % kind,
-            "pos": [round(v, 1) for v in pos], "dir": list(direction)}
+# Categorie de point d'insertion par famille : c'est la valeur du texte
+# utilisateur « Point d'Insertion » porte par la definition de bloc Rhino.
+CATEGORIE = {
+    "Cardio": "A",
+    "Musculation guidee": "B", "Musculation guidée": "B",
+    "Poids libres": "C",
+    "Fonctionnel": "D",
+    "Services": "E",
+}
+
+
+def pi(kind, pos, direction=None):
+    """Point natif place dans le bloc, hors origine : connecteur UNIVERSEL.
+    Il accepte n'importe quelle categorie. Le parametre `kind` n'est conserve
+    que pour la lisibilite des appels ; il n'entre plus dans le format."""
+    return {"type": "*", "name": "Connecteur universel",
+            "pos": [round(v, 1) for v in pos]}
+
+
+def principal(categorie):
+    """Point d'insertion principal : l'origine du bloc."""
+    return {"type": categorie, "name": "Point d'insertion %s" % categorie,
+            "pos": [0, 0, 0], "main": True}
 
 
 def add(bid, name, category, price, ref, desc, parts, connectors=None,
@@ -153,8 +171,9 @@ def add(bid, name, category, price, ref, desc, parts, connectors=None,
         "finishes": COLORIS if coloris else [],
         "meshes": [p.json() for p in parts],
     }
-    if connectors:
-        b["connectors"] = connectors
+    cat = CATEGORIE.get(category, "A")
+    points = [principal(cat)] + list(connectors or [])
+    b["connectors"] = points
     blocks.append(b)
 
 
@@ -461,8 +480,12 @@ library = {
     "gridStep": 100,
     "categories": categories,
     "connectorTypes": [
-        {"id": "A", "name": "A — alignement latéral"},
-        {"id": "B", "name": "B — adossement"},
+        {"id": "A", "name": "A — cardio"},
+        {"id": "B", "name": "B — musculation guidée"},
+        {"id": "C", "name": "C — poids libres"},
+        {"id": "D", "name": "D — fonctionnel"},
+        {"id": "E", "name": "E — services"},
+        {"id": "*", "name": "Connecteur universel"},
     ],
     "presets": presets,
     "blocks": blocks,

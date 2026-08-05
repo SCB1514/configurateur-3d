@@ -26,6 +26,7 @@ const app = {
   selected: null,
   filter: { text: '', category: null },
   compat: null,          // {uid, blockName, types:[…]} — panneau « compatibles »
+  showDims: false,       // cotes de la sélection
   viewonly: params.get('view') === '1',
   embed: params.get('embed') === '1',
   config: {},
@@ -50,7 +51,7 @@ async function boot() {
     onSelect: uid => onSelect(uid),
     onTransform: (uid, patch) => {
       const it = find(uid);
-      if (it) { Object.assign(it, patch); refreshSelectionPanel(); scheduleSave(); }
+      if (it) { Object.assign(it, patch); refreshSelectionPanel(); refreshDimensions(); scheduleSave(); }
     },
     onCommit: () => pushHistory(),
   });
@@ -555,6 +556,18 @@ function refreshAll() {
 function onSelect(uid) {
   app.selected = uid;
   refreshSelectionPanel();
+  refreshDimensions();
+}
+
+/** Encadré coté autour de la sélection — un seul cadre, même à plusieurs. */
+function refreshDimensions() {
+  if (!app.showDims || !app.selected) { app.viewer.clearDimensions(); return; }
+  const uids = [app.selected];
+  const box = app.viewer.boundsOf(uids);
+  const nom = uids.length > 1
+    ? `${uids.length} éléments`
+    : app.lib.block(find(app.selected)?.blockId)?.name || '';
+  app.viewer.showDimensions(box, nom);
 }
 
 function refreshSelectionPanel() {
@@ -695,6 +708,20 @@ function wireUI() {
     app.viewer.select(uid);
     showCompatible(uid);
   });
+
+  $('#btn-points').onclick = e => {
+    const on = !app.viewer.pointsVisible;
+    app.viewer.setPointsVisible(on);
+    e.currentTarget.classList.toggle('on', on);
+    toast(on ? "Points d'accroche affichés" : "Points masqués");
+  };
+
+  $('#btn-cotes').onclick = e => {
+    app.showDims = !app.showDims;
+    e.currentTarget.classList.toggle('on', app.showDims);
+    refreshDimensions();
+    if (app.showDims && !app.selected) toast('Sélectionnez un ou plusieurs éléments');
+  };
 
   $('#btn-magnet').classList.add('on');
   $('#btn-magnet').onclick = e => {

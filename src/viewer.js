@@ -10,6 +10,7 @@ import { RoomEnvironment } from '../vendor/three/addons/environments/RoomEnviron
 
 const DEG = Math.PI / 180;
 const UP = new THREE.Vector3(0, 0, 1);
+const UNIVERSAL = '*';
 
 export class Viewer {
   constructor(canvas, hooks = {}) {
@@ -47,7 +48,7 @@ export class Viewer {
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
-    this.controls.maxPolarAngle = Math.PI * 0.495;
+    // pas de bridage : on doit pouvoir passer sous le sol pour travailler en Z negatif
     this.controls.target.set(0, 0, 0.4);
 
     /* ---------- lumières ---------- */
@@ -67,20 +68,9 @@ export class Viewer {
     this.sun = sun;
 
     /* ---------- sol ---------- */
-    const pad = new THREE.Mesh(
-      new THREE.CircleGeometry(60, 64),
-      new THREE.MeshBasicMaterial({ color: 0x121821 })
-    );
-    pad.position.z = -0.004;
-    this.scene.add(pad);
-
-    this.ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(400, 400),
-      new THREE.ShadowMaterial({ opacity: 0.4 })
-    );
-    this.ground.receiveShadow = true;
-    this.ground.name = '__ground';
-    this.scene.add(this.ground);
+    // Pas de plan récepteur d'ombre : hors du cadre d'ombre du soleil, un tel plan
+    // se peint intégralement en ombre douce et laisse une grande tache claire en
+    // surimpression. Les machines continuent de porter ombre les unes sur les autres.
 
     this.grid = new THREE.GridHelper(80, 80, 0x5d6b7d, 0x2e3946);
     this.grid.rotation.x = Math.PI / 2;
@@ -111,6 +101,17 @@ export class Viewer {
     });
     this.gizmo.addEventListener('objectChange', () => this._readTransform());
     this.gizmo.visible = false;
+
+    // Le plan de saisie du gizmo est un carré de 100 000 unités qu'Eto/Three
+    // laisse peindre à 10 % d'opacité : il barre la vue d'une grande forme
+    // claire. On le garde pour la saisie — le lancer de rayon ignore la
+    // visibilité du matériau — mais on cesse de le dessiner.
+    this.gizmo.traverse(o => {
+      if (o.type !== 'TransformControlsPlane' || !o.material) return;
+      o.material.visible = false;
+      o.material.opacity = 0;
+    });
+
     this.scene.add(this.gizmo);
     this.editable = true;
     this.setTool('translate');
@@ -252,6 +253,7 @@ export class Viewer {
   }
 
   syncAll(items) {
+    this._pointsDirty = true;
     const keep = new Set(items.map(i => i.uid));
     for (const uid of [...this.objects.keys()]) if (!keep.has(uid)) this.removeItem(uid);
     for (const it of items) {
@@ -261,6 +263,7 @@ export class Viewer {
         else this._applyTransform(obj, it, this.lib.block(it.blockId));
       } else this.addItem(it);
     }
+    if (this._pointsDirty) { this.refreshPoints(); this._pointsDirty = false; }
   }
 
   _applyTransform(obj, item, block) {
@@ -349,8 +352,9 @@ export class Viewer {
       uid: obj.userData.uid,
       index: c.index,
       type: c.type,
+      main: c.main,
+      name: c.name,
       pos: c.pos.clone().applyMatrix4(obj.matrixWorld),
-      dir: c.dir.clone().transformDirection(obj.matrixWorld).normalize(),
     }));
   }
 
@@ -379,16 +383,18 @@ export class Viewer {
       o => o.type === c.type && o.pos.distanceTo(c.pos) <= this.snapTol));
   }
 
-  /** Lacet à appliquer pour mettre deux directions face à face. */
-  _alignYaw(dirSrc, dirTgt, currentYawDeg) {
-    const hs = Math.hypot(dirSrc.x, dirSrc.y);
-    const ht = Math.hypot(dirTgt.x, dirTgt.y);
-    if (hs < 0.25 || ht < 0.25) return currentYawDeg;      // connexion verticale
-    const aSrc = Math.atan2(dirSrc.y, dirSrc.x);
-    const aTgt = Math.atan2(-dirTgt.y, -dirTgt.x);          // en vis-à-vis
-    let deg = (aTgt - aSrc) / DEG;
-    deg = Math.round(deg * 1e3) / 1e3;
-    return ((deg % 360) + 360) % 360;
+  /** Deux points s'acceptent-ils ? Même catégorie, ou l'un des deux universel. */
+  static compatible(a, b) {
+    return a === b || a === UNIVERSAL || b === UNIVERSAL;
+  }
+
+  /**
+   * Le point par lequel un bloc s'accroche : son point d'insertion principal,
+   * c'est-à-dire l'origine du bloc Rhino. À défaut, l'origine tout court.
+   */
+  _anchorOf(block) {
+    const main = block?.connectors?.find(c => c.main);
+    return main || { type: UNIVERSAL, pos: new THREE.Vector3(), main: true };
   }
 
   /**
@@ -397,22 +403,24 @@ export class Viewer {
    * @returns {origin, yaw, target, source, d} ou null
    */
   computeSnap(block, origin, currentYawDeg, excludeUid, maxDist) {
-    if (!this.magnet || !block?.connectors.length) return null;
-    const all = this.allConnectors(excludeUid);
-    const targets = all.filter(t => !this.isOccupied(t, all));
+    if (!this.magnet || !block) return null;
+    const anchor = this._anchorOf(block);
+    const targets = this.allConnectors(excludeUid)
+      .filter(t => Viewer.compatible(anchor.type, t.type));
     if (!targets.length) return null;
+
+    // La rotation n'est pas touchée : l'accroche se fait par superposition de
+    // points, l'orientation reste celle que l'utilisateur a choisie.
+    const yaw = currentYawDeg;
+    const q = new THREE.Quaternion().setFromAxisAngle(UP, yaw * DEG);
+    const local = anchor.pos.clone().applyQuaternion(q);
 
     const radius = maxDist ?? this.snapRadius;
     let best = null;
     for (const t of targets) {
-      for (const c of block.connectors) {
-        if (c.type !== t.type) continue;
-        const yaw = this._alignYaw(c.dir, t.dir, currentYawDeg);
-        const q = new THREE.Quaternion().setFromAxisAngle(UP, yaw * DEG);
-        const o = t.pos.clone().sub(c.pos.clone().applyQuaternion(q));
-        const d = o.distanceTo(origin);
-        if (d <= radius && (!best || d < best.d)) best = { origin: o, yaw, target: t, source: c, d };
-      }
+      const o = t.pos.clone().sub(local);
+      const d = o.distanceTo(origin);
+      if (d <= radius && (!best || d < best.d)) best = { origin: o, yaw, target: t, source: anchor, d };
     }
     return best;
   }
@@ -420,15 +428,10 @@ export class Viewer {
   /** Repères visuels : point de connexion trouvé + points libres compatibles. */
   showSnapHints(block, snap, excludeUid) {
     this.snapMarker.visible = !!snap;
-    if (snap) {
-      this.snapMarker.position.copy(snap.target.pos);
-      this.snapMarker.quaternion.setFromUnitVectors(
-        new THREE.Vector3(0, 0, 1), snap.target.dir.clone().normalize());
-    }
-    const types = new Set(block?.connectorTypes || []);
-    if (!this.magnet || !types.size) { this.hintDots.visible = false; return; }
-    const all = this.allConnectors(excludeUid);
-    const pts = all.filter(c => types.has(c.type) && !this.isOccupied(c, all));
+    if (snap) this.snapMarker.position.copy(snap.target.pos);
+    const anchor = this._anchorOf(block);
+    if (!this.magnet) { this.hintDots.visible = false; return; }
+    const pts = this.allConnectors(excludeUid).filter(c => Viewer.compatible(anchor.type, c.type));
     if (!pts.length) { this.hintDots.visible = false; return; }
     const arr = new Float32Array(pts.length * 3);
     pts.forEach((c, i) => { arr[i * 3] = c.pos.x; arr[i * 3 + 1] = c.pos.y; arr[i * 3 + 2] = c.pos.z; });
@@ -451,23 +454,17 @@ export class Viewer {
   autoAttach(block, targetUid, wantedType) {
     const obj = this.objects.get(targetUid);
     if (!obj || !block.connectors.length) return null;
-    const free = this.freeConnectors(targetUid)
-      .filter(c => !wantedType || c.type === wantedType);
+    const free = this.worldConnectors(this.objects.get(targetUid))
+      .filter(c => !wantedType || Viewer.compatible(c.type, wantedType));
 
+    const anchor = this._anchorOf(block);
     const candidats = [];
     for (const t of free) {
-      for (const c of block.connectors) {
-        if (c.type !== t.type) continue;
-        const yaw = this._alignYaw(c.dir, t.dir, 0);
-        const q = new THREE.Quaternion().setFromAxisAngle(UP, yaw * DEG);
-        const o = t.pos.clone().sub(c.pos.clone().applyQuaternion(q));
-        // coût de rotation : on préfère poser le bloc dans son orientation
-        // d'origine (deux meubles côte à côte gardent leur façade devant)
-        const tour = Math.min(Math.abs(yaw), 360 - Math.abs(yaw));
-        candidats.push({ o, yaw, type: t.type, tour, vue: t.pos.distanceTo(this.camera.position) });
-      }
+      if (!Viewer.compatible(anchor.type, t.type)) continue;
+      const o = t.pos.clone().sub(anchor.pos);
+      candidats.push({ o, yaw: 0, type: t.type, vue: t.pos.distanceTo(this.camera.position) });
     }
-    candidats.sort((a, b) => (a.tour - b.tour) || (a.vue - b.vue));
+    candidats.sort((a, b) => a.vue - b.vue);
 
     for (const k of candidats) {
       if (this._overlaps(block, k.o, k.yaw)) continue;
@@ -547,15 +544,20 @@ export class Viewer {
     this._setPointer(ev);
     this.ray.setFromCamera(this.pointer, this.camera);
     const hits = this.ray.intersectObjects([...this.objects.values()], true);
-    let x, y, z = 0, stacked = false;
+    let x, y, z = 0, stacked = false, below = false;
     if (hits.length) {
       const h = hits[0];
       const n = h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld) : null;
       x = h.point.x; y = h.point.y;
+      const box = new THREE.Box3().setFromObject(rootOf(h.object, this.scene));
       if (n && n.z > 0.5) {
-        const top = new THREE.Box3().setFromObject(rootOf(h.object, this.scene));
-        z = top.max.z;                     // on empile sur la face supérieure
+        z = box.max.z;                     // on empile sur la face supérieure
         stacked = true;                    // hauteur exacte : pas d'aimantation en Z
+      } else if (n && n.z < -0.5) {
+        // face inférieure visée : on pose EN DESSOUS, donc en Z négatif
+        z = box.min.z;
+        stacked = true;
+        below = true;
       }
     } else {
       const p = new THREE.Vector3();
@@ -567,7 +569,7 @@ export class Viewer {
       y = Math.round(y / this.gridStep) * this.gridStep;
       if (!stacked) z = Math.round(z / this.gridStep) * this.gridStep;
     }
-    return { x: r4(x), y: r4(y), z: r4(z) };
+    return { x: r4(x), y: r4(y), z: r4(z), below };
   }
 
   /* ══════════ pointeur ══════════ */
@@ -592,7 +594,8 @@ export class Viewer {
 
   /** Position/rotation du fantôme : magnétisme prioritaire sur la grille. */
   _ghostTransform(p) {
-    const base = new THREE.Vector3(p.x, p.y, p.z + this.ghostBlock.baseOffset);
+    const drop = p.below ? p.z - this.ghostBlock.size.z : p.z;
+    const base = new THREE.Vector3(p.x, p.y, drop + this.ghostBlock.baseOffset);
     const snap = this.computeSnap(this.ghostBlock, base, this.ghostRot, null);
     return snap
       ? { origin: snap.origin, yaw: snap.yaw, snap }
@@ -639,6 +642,128 @@ export class Viewer {
     const hits = this.ray.intersectObjects([...this.objects.values()], true);
     if (hits.length) this.select(rootOf(hits[0].object, this.scene).userData.uid);
     else this.select(null);
+  }
+
+  /* ══════════ points d'accroche visibles ══════════
+     Agrandis pour être vus de loin, cliquables, et masquables.
+     ================================================ */
+  setPointsVisible(on) {
+    this.pointsVisible = on;
+    this.refreshPoints();
+  }
+
+  refreshPoints() {
+    if (!this.pointGroup) {
+      this.pointGroup = new THREE.Group();
+      this.pointGroup.renderOrder = 996;
+      this.scene.add(this.pointGroup);
+      this._pointGeom = new THREE.SphereGeometry(1, 16, 12);
+    }
+
+    for (const m of this.pointGroup.children) m.material.dispose();
+    this.pointGroup.clear();
+    this.pointGroup.visible = !!this.pointsVisible;
+    if (!this.pointsVisible) return;
+
+    const rayon = Math.max(this.gridStep * 0.9, 0.07);
+    const all = this.allConnectors(null);
+    for (const c of all) {
+      const occupe = this.isOccupied(c, all);
+      const mesh = new THREE.Mesh(this._pointGeom, new THREE.MeshBasicMaterial({
+        color: c.type === UNIVERSAL ? 0x3ecf8e : (occupe ? 0xff9f43 : 0x3d8bff),
+        depthTest: false, transparent: true, opacity: occupe ? 0.55 : 0.9,
+      }));
+      mesh.position.copy(c.pos);
+      mesh.scale.setScalar(rayon);
+      mesh.userData.connector = c;
+      this.pointGroup.add(mesh);
+    }
+  }
+
+  /** Point d'accroche sous le curseur, ou null. */
+  pickPointAt(ev) {
+    if (!this.pointsVisible || !this.pointGroup) return null;
+    this._setPointer(ev);
+    this.ray.setFromCamera(this.pointer, this.camera);
+    const hits = this.ray.intersectObjects(this.pointGroup.children, false);
+    return hits.length ? hits[0].object.userData.connector : null;
+  }
+
+  /* ══════════ cotes et sélection multiple ══════════ */
+
+  /** Encadré coté autour d'une boîte : arêtes + trois cotes. */
+  showDimensions(box, label) {
+    this.clearDimensions();
+    if (!box || box.isEmpty()) return;
+
+    this.dimGroup = new THREE.Group();
+    this.dimGroup.renderOrder = 995;
+
+    const helper = new THREE.Box3Helper(box.clone(), 0x3ecf8e);
+    if (helper.material) { helper.material.depthTest = false; helper.material.transparent = true; }
+    this.dimGroup.add(helper);
+
+    const size = box.getSize(new THREE.Vector3());
+    const min = box.min, max = box.max;
+    const k = this.lib?.scale || 1;
+    const unite = this.lib?.units || 'm';
+    const n = v => Math.round(v / k);
+
+    const cotes = [
+      [`${n(size.x)} ${unite}`, new THREE.Vector3((min.x + max.x) / 2, min.y, min.z)],
+      [`${n(size.y)} ${unite}`, new THREE.Vector3(max.x, (min.y + max.y) / 2, min.z)],
+      [`${n(size.z)} ${unite}`, new THREE.Vector3(max.x, min.y, (min.z + max.z) / 2)],
+    ];
+    if (label) cotes.push([label, new THREE.Vector3((min.x + max.x) / 2, (min.y + max.y) / 2, max.z)]);
+
+    for (const [texte, position] of cotes) this.dimGroup.add(this._label(texte, position));
+    this.scene.add(this.dimGroup);
+  }
+
+  clearDimensions() {
+    if (!this.dimGroup) return;
+    this.scene.remove(this.dimGroup);
+    this.dimGroup.traverse(o => {
+      if (o.material) { o.material.map?.dispose(); o.material.dispose(); }
+    });
+    this.dimGroup = null;
+  }
+
+  /** Étiquette de cote : un panneau toujours face à la caméra. */
+  _label(texte, position) {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    ctx.font = 'bold 44px Inter, Segoe UI, sans-serif';
+    const largeur = Math.ceil(ctx.measureText(texte).width) + 32;
+    canvas.width = largeur; canvas.height = 68;
+
+    const c2 = canvas.getContext('2d');
+    c2.font = 'bold 44px Inter, Segoe UI, sans-serif';
+    c2.fillStyle = 'rgba(12,16,22,0.86)';
+    c2.roundRect(0, 0, largeur, 68, 14); c2.fill();
+    c2.fillStyle = '#3ecf8e';
+    c2.textBaseline = 'middle';
+    c2.fillText(texte, 16, 36);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: texture, depthTest: false, transparent: true,
+    }));
+    sprite.position.copy(position);
+    const echelle = Math.max(this.gridStep * 4, 0.32);
+    sprite.scale.set(echelle * largeur / 68, echelle, 1);
+    return sprite;
+  }
+
+  /** Boîte englobante d'un ensemble d'objets. */
+  boundsOf(uids) {
+    const box = new THREE.Box3();
+    for (const uid of uids) {
+      const obj = this.objects.get(uid);
+      if (obj) box.union(new THREE.Box3().setFromObject(obj));
+    }
+    return box.isEmpty() ? null : box;
   }
 
   /* ══════════ vues ══════════ */
