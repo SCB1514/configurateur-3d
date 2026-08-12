@@ -1,0 +1,427 @@
+import * as THREE from '../vendor/three/three.module.js';
+
+/* ============================================================
+   Qualité de rendu
+   ------------------------------------------------------------
+   Trois choses font la différence entre une maquette et une
+   image de présentation, et aucune n'est le nombre de polygones :
+
+     1. l'ÉCLAIRAGE d'environnement — ce que le matériau reflète ;
+     2. l'ANCRAGE au sol — sans ombre de contact, tout flotte ;
+     3. l'OCCLUSION dans les recoins, qui donne le volume.
+
+   Ce module s'occupe des trois, plus le post-traitement.
+   Tout est réglable : une salle de sport se présente en studio
+   sombre pour un rendu produit, ou en showroom clair pour une
+   implantation.
+   ============================================================ */
+
+/* ══════════════════ environnements ══════════════════
+   Construits à la volée plutôt que chargés : une carte HDR pèse
+   plusieurs mégaoctets, et une boîte de studio bien posée donne
+   des reflets plus nets qu'un panorama générique.
+   ==================================================== */
+
+/* Réglage de l'exposition, pour mémoire — c'est là que tout se joue.
+   L'environnement est un éclairage complet : ses couleurs de voûte sont
+   l'ambiance de base, présente partout, et les panneaux ne sont que des
+   reflets ponctuels. Une voûte blanche donne un blanc cramé quelle que soit
+   l'exposition. On garde donc la voûte à mi-clair, même en showroom, et on
+   laisse les panneaux — petits et vifs — porter l'éclat. */
+
+export const ENVIRONNEMENTS = {
+  studio: {
+    nom: 'Studio',
+    // Un cyclorama : clair au centre, sombre aux bords. C'est ce dégradé,
+    // et non une couleur unie, qui détache le sujet et donne la profondeur.
+    fondCentre: 0x2b323d, fondBord: 0x0a0c10,
+    sol: 0x1b1f27, solRugosite: 0.26, solMetal: 0.0,
+    env: { ciel: 0x2a3038, horizon: 0x14181e, sol: 0x0d1015 },
+    exposition: 1.2, soleil: 2.6, ambiance: 0.15,
+    // trois boîtes lumineuses : clé, contre-jour, remplissage
+    sources: [
+      { pos: [4, -5, 6], taille: [5, 3], couleur: 0xffffff, force: 4.5 },
+      { pos: [-6, 3, 4], taille: [4, 4], couleur: 0xa8c8ff, force: 2.0 },
+      { pos: [0, 7, 3], taille: [6, 2], couleur: 0xfff0dc, force: 1.4 },
+    ],
+  },
+  showroom: {
+    nom: 'Showroom',
+    fondCentre: 0xf2f5f8, fondBord: 0xc6ccd5,
+    sol: 0xdfe3e9, solRugosite: 0.45, solMetal: 0.0,
+    env: { ciel: 0xc4cad3, horizon: 0x99a0aa, sol: 0x79808a },
+    exposition: 0.95, soleil: 2.2, ambiance: 0.10,
+    sources: [
+      { pos: [5, -4, 7], taille: [6, 4], couleur: 0xffffff, force: 2.4 },
+      { pos: [-5, 4, 6], taille: [6, 4], couleur: 0xffffff, force: 1.6 },
+      { pos: [0, 0, 9], taille: [8, 8], couleur: 0xffffff, force: 1.2 },
+    ],
+  },
+  atelier: {
+    nom: 'Atelier',
+    fondCentre: 0x3b434f, fondBord: 0x171a20,
+    sol: 0x2f343d, solRugosite: 0.62, solMetal: 0.0,
+    env: { ciel: 0x39414d, horizon: 0x1c2027, sol: 0x14171c },
+    exposition: 1.05, soleil: 3.0, ambiance: 0.18,
+    sources: [
+      { pos: [6, -6, 8], taille: [3, 3], couleur: 0xfff2e0, force: 5.0 },
+      { pos: [-7, 2, 5], taille: [2, 5], couleur: 0x9fc0ff, force: 1.6 },
+    ],
+  },
+};
+
+/**
+ * Le fond : un dégradé radial peint une fois, posé comme image de fond.
+ * Three dessine une texture 2D en plein cadre — c'est exactement le mur de
+ * fond dégradé d'un studio photo, sans géométrie ni coût de rendu.
+ */
+function textureFond(centre, bord) {
+  const t = document.createElement('canvas');
+  t.width = t.height = 512;
+  const c = t.getContext('2d');
+  // centre légèrement haut : la lumière tombe d'en haut, comme dans la vraie vie
+  const d = c.createRadialGradient(256, 200, 20, 256, 256, 400);
+  d.addColorStop(0, '#' + new THREE.Color(centre).getHexString());
+  d.addColorStop(1, '#' + new THREE.Color(bord).getHexString());
+  c.fillStyle = d;
+  c.fillRect(0, 0, 512, 512);
+
+  const texture = new THREE.CanvasTexture(t);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+/**
+ * Le voile du sol : opaque au centre, transparent aux bords.
+ * Sans lui, le plan récepteur se termine par une arête franche en plein
+ * cadre. Avec, il se dissout dans le fond et le sol paraît infini.
+ */
+function textureVoile() {
+  const t = document.createElement('canvas');
+  t.width = t.height = 256;
+  const c = t.getContext('2d');
+  const d = c.createRadialGradient(128, 128, 10, 128, 128, 126);
+  d.addColorStop(0, '#ffffff');
+  d.addColorStop(0.55, '#dddddd');
+  d.addColorStop(1, '#000000');
+  c.fillStyle = d;
+  c.fillRect(0, 0, 256, 256);
+  return new THREE.CanvasTexture(t);
+}
+
+/** Une scène d'éclairage : dégradé de fond + panneaux émissifs. */
+function batirEnvironnement(reglage) {
+  const scene = new THREE.Scene();
+
+  // La voûte : un dégradé ciel/horizon, qui donne au métal sa direction.
+  const voute = new THREE.Mesh(
+    new THREE.SphereGeometry(40, 32, 24),
+    new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      uniforms: {
+        ciel: { value: new THREE.Color(reglage.env.ciel) },
+        horizon: { value: new THREE.Color(reglage.env.horizon) },
+        sol: { value: new THREE.Color(reglage.env.sol) },
+      },
+      vertexShader: `
+        varying vec3 vPos;
+        void main() {
+          vPos = position;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+      fragmentShader: `
+        uniform vec3 ciel; uniform vec3 horizon; uniform vec3 sol;
+        varying vec3 vPos;
+        void main() {
+          float h = normalize(vPos).z;
+          vec3 c = h > 0.0 ? mix(horizon, ciel, pow(h, 0.6))
+                           : mix(horizon, sol, pow(-h, 0.5));
+          gl_FragColor = vec4(c, 1.0);
+        }`,
+    }));
+  scene.add(voute);
+
+  for (const s of reglage.sources) {
+    const panneau = new THREE.Mesh(
+      new THREE.PlaneGeometry(s.taille[0], s.taille[1]),
+      new THREE.MeshBasicMaterial({ color: s.couleur }));
+    panneau.material.color.multiplyScalar(s.force);
+    panneau.position.set(...s.pos);
+    panneau.lookAt(0, 0, 1);
+    scene.add(panneau);
+  }
+
+  return scene;
+}
+
+/* ══════════════════ moteur ══════════════════ */
+
+export class Rendu {
+  constructor(viewer) {
+    this.viewer = viewer;
+    this.reglages = {
+      environnement: 'studio',
+      exposition: 1.15,
+      ombres: 0.7,
+      occlusion: 0.7,
+      bloom: 0.2,
+      sol: true,
+      reperes: true,           // grille et axes — utiles pour poser, non pour présenter
+      qualite: 'haute',        // 'rapide' | 'haute'
+    };
+    this._pmrem = new THREE.PMREMGenerator(viewer.renderer);
+    this._composer = null;
+    this._passes = {};
+  }
+
+  /* ---------------- environnement ---------------- */
+
+  appliquerEnvironnement(nom = this.reglages.environnement) {
+    const reglage = ENVIRONNEMENTS[nom] || ENVIRONNEMENTS.studio;
+    this.reglages.environnement = nom;
+
+    const scene = batirEnvironnement(reglage);
+    const cible = this._pmrem.fromScene(scene, 0.02);
+    this.viewer.scene.environment?.dispose?.();
+    this.viewer.scene.environment = cible.texture;
+
+    this.viewer.scene.background?.dispose?.();
+    this.viewer.scene.background = textureFond(reglage.fondCentre, reglage.fondBord);
+
+    this.reglages.exposition = reglage.exposition;
+    this.viewer.renderer.toneMappingExposure = reglage.exposition;
+
+    // Les sources directes accompagnent l'ambiance : c'est le soleil qui porte
+    // l'ombre, et une ombre ne se lit que si sa source l'emporte sur le diffus.
+    if (this.viewer.sun) this.viewer.sun.intensity = reglage.soleil;
+    if (this.viewer.hemi) this.viewer.hemi.intensity = reglage.ambiance;
+    if (this.viewer.contre) this.viewer.contre.intensity = reglage.ambiance * 1.5;
+
+    // La grille et les axes accompagnent le décor sans le trancher. La grille
+    // porte ses couleurs dans ses sommets : toucher à material.color les
+    // multiplierait et l'effacerait — on ne joue que sur l'opacité.
+    this._clair = new THREE.Color(reglage.fondBord).getHSL({}).l > 0.5;
+    if (this.viewer.grid) this.viewer.grid.material.opacity = this._clair ? 0.5 : 0.32;
+    this.majReperes();
+
+    scene.traverse(o => { o.geometry?.dispose(); o.material?.dispose(); });
+    this.majSol();
+    return reglage;
+  }
+
+  /** Grille et axes : utiles pour implanter, encombrants pour présenter. */
+  majReperes() {
+    const on = this.reglages.reperes;
+    if (this.viewer.grid) this.viewer.grid.visible = on;
+    for (const o of this.viewer.scene.children) {
+      if (o.isGroup && o.userData.axes) o.visible = on;
+    }
+  }
+
+  /* ---------------- sol et ombres ----------------
+     Un plan récepteur borné à l'emprise réelle, et une caméra
+     d'ombre ajustée à la même emprise. C'est ce couplage qui
+     manquait : un plan infini hors du cadre d'ombre se peint
+     entièrement en ombre douce et barre la vue.
+     ------------------------------------------------ */
+
+  majSol() {
+    const viewer = this.viewer;
+    const emprise = viewer.bounds();
+    const reglage = ENVIRONNEMENTS[this.reglages.environnement] || ENVIRONNEMENTS.studio;
+
+    if (!this._sol) {
+      this._voile = textureVoile();
+      this._sol = new THREE.Mesh(
+        new THREE.PlaneGeometry(1, 1),
+        new THREE.MeshStandardMaterial({
+          transparent: true, depthWrite: false, alphaMap: this._voile,
+        }));
+      this._sol.receiveShadow = true;
+      this._sol.renderOrder = -2;
+      this._sol.raycast = () => {};      // le sol ne doit jamais capter un clic
+      viewer.scene.add(this._sol);
+    }
+
+    // Le sol reflète l'environnement : c'est ce reflet, et non l'ombre seule,
+    // qui pose les machines. Un capteur d'ombre pur sur fond noir ne montre
+    // rien du tout — l'ombre y est invisible.
+    Object.assign(this._sol.material, {
+      color: new THREE.Color(reglage.sol),
+      roughness: reglage.solRugosite,
+      metalness: reglage.solMetal,
+      envMapIntensity: 0.85,
+      opacity: 0.35 + this.reglages.ombres * 0.65,
+    });
+    this._sol.material.needsUpdate = true;
+
+    this._sol.visible = this.reglages.sol && !!emprise;
+    if (!emprise) return;
+
+    const centre = emprise.getCenter(new THREE.Vector3());
+    const taille = emprise.getSize(new THREE.Vector3());
+    const cote = Math.max(taille.x, taille.y) * 3.2 + 4;
+
+    this._sol.geometry.dispose();
+    this._sol.geometry = new THREE.PlaneGeometry(cote, cote);
+    this._sol.position.set(centre.x, centre.y, Math.min(emprise.min.z, 0) + 0.001);
+
+    // La caméra d'ombre épouse les machines, pas le sol : chaque mètre carré
+    // de carte d'ombre dépensé hors du sujet est de la finesse perdue.
+    const sun = viewer.sun;
+    if (sun?.shadow) {
+      const rayon = Math.max(taille.length() * 0.62, 2);
+      Object.assign(sun.shadow.camera, {
+        left: -rayon, right: rayon, top: rayon, bottom: -rayon,
+        near: 0.5, far: rayon * 6,
+      });
+
+      // Environ 32° au-dessus de l'horizon, et surtout décalé de la caméra :
+      // une source dans l'axe du regard cache son ombre derrière le sujet, et
+      // une source à la verticale la cache dessous. Placée en -X/-Y, elle
+      // étale l'ombre vers la droite de la vue isométrique — celle des
+      // partages et des vignettes.
+      sun.position.set(centre.x - rayon * 0.90, centre.y - rayon * 1.00,
+                       emprise.min.z + rayon * 0.85);
+      sun.target.position.copy(centre);
+      if (!sun.target.parent) viewer.scene.add(sun.target);
+      sun.target.updateMatrixWorld();
+      sun.shadow.camera.updateProjectionMatrix();
+      sun.shadow.mapSize.set(2048, 2048);
+      sun.shadow.bias = -0.0006;
+      sun.shadow.normalBias = 0.02;
+    }
+  }
+
+  /* ---------------- post-traitement ---------------- */
+
+  async activerPostTraitement() {
+    if (this._composer) return this._composer;
+    const viewer = this.viewer;
+
+    const [{ EffectComposer }, { RenderPass }, { OutputPass }, { UnrealBloomPass }, { SMAAPass }, { GTAOPass }] =
+      await Promise.all([
+        import('../vendor/three/addons/postprocessing/EffectComposer.js'),
+        import('../vendor/three/addons/postprocessing/RenderPass.js'),
+        import('../vendor/three/addons/postprocessing/OutputPass.js'),
+        import('../vendor/three/addons/postprocessing/UnrealBloomPass.js'),
+        import('../vendor/three/addons/postprocessing/SMAAPass.js'),
+        import('../vendor/three/addons/postprocessing/GTAOPass.js'),
+      ]);
+
+    const el = viewer.canvas.parentElement;
+    const largeur = el.clientWidth || 1, hauteur = el.clientHeight || 1;
+
+    const composer = new EffectComposer(viewer.renderer);
+    composer.setSize(largeur, hauteur);
+    // 1,5 plutôt que 2 : les cibles de rendu du compositeur sont en virgule
+    // flottante et coûtent quatre fois plus cher qu'un pixel d'écran. Le
+    // lissage SMAA rattrape la finesse perdue, et bien plus vite.
+    composer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+
+    const rendu = new RenderPass(viewer.scene, viewer.camera);
+    composer.addPass(rendu);
+
+    // Occlusion ambiante : c'est elle qui creuse les recoins et pose
+    // les machines dans l'espace au lieu de les laisser en aplat.
+    const ao = new GTAOPass(viewer.scene, viewer.camera, largeur, hauteur);
+    ao.output = GTAOPass.OUTPUT.Default;
+    composer.addPass(ao);
+
+    const bloom = new UnrealBloomPass(
+      new THREE.Vector2(largeur, hauteur), this.reglages.bloom, 0.45, 0.92);
+    composer.addPass(bloom);
+
+    composer.addPass(new OutputPass());
+
+    const smaa = new SMAAPass(largeur, hauteur);
+    composer.addPass(smaa);
+
+    this._composer = composer;
+    this._passes = { rendu, ao, bloom, smaa };
+    this.majPostTraitement();
+    return composer;
+  }
+
+  majPostTraitement() {
+    const p = this._passes;
+    if (!p.ao) return;
+
+    const haute = this.reglages.qualite === 'haute';
+    const force = this.reglages.occlusion;
+
+    p.ao.enabled = force > 0.01;
+    p.ao.blendIntensity = force;              // le vrai bouton de dosage de l'AO
+    p.ao.updateGtaoMaterial({
+      // 35 cm : l'échelle des creux qui comptent — entre un capot et son
+      // châssis, sous un repose-pied, autour d'une poulie.
+      radius: 0.35, distanceExponent: 1.6, thickness: 0.6,
+      scale: 1, samples: haute ? 16 : 8,
+    });
+
+    p.bloom.enabled = this.reglages.bloom > 0.01;
+    p.bloom.strength = this.reglages.bloom;
+    p.smaa.enabled = haute;
+  }
+
+  desactiverPostTraitement() {
+    this._composer = null;
+    this._passes = {};
+  }
+
+  redimensionner(largeur, hauteur) {
+    if (!this._composer) return;
+    this._composer.setSize(largeur, hauteur);
+    this._passes.ao?.setSize?.(largeur, hauteur);
+    this._passes.bloom?.setSize?.(largeur, hauteur);
+    this._passes.smaa?.setSize?.(largeur, hauteur);
+  }
+
+  /** Utilisé par la capture d'image, qui rend à une résolution supérieure. */
+  setPixelRatio(ratio) {
+    this._composer?.setPixelRatio(ratio);
+  }
+
+  /**
+   * Signale que la vue bouge.
+   *
+   * L'occlusion ambiante coûte à elle seule plus que tout le reste réuni, et
+   * personne ne l'examine en faisant tourner la scène. On la suspend le temps
+   * du mouvement et on la rétablit dès l'arrêt : on garde l'aisance de la
+   * manipulation sans rien céder sur l'image que l'on regarde vraiment.
+   */
+  signalerMouvement() {
+    this._bougeJusqua = performance.now() + 200;
+  }
+
+  /**
+   * Rend une image. Renvoie faux si le post-traitement n'est pas en place.
+   * `forcer` impose la qualité pleine même en plein mouvement — la capture
+   * d'image ne doit jamais livrer une vue dégradée.
+   */
+  rendre(forcer = false) {
+    if (!this._composer) return false;
+
+    const ao = this._passes.ao;
+    if (ao) {
+      const immobile = forcer || performance.now() >= (this._bougeJusqua || 0);
+      ao.enabled = immobile && this.reglages.occlusion > 0.01;
+    }
+    this._composer.render();
+    return true;
+  }
+
+  /* ---------------- réglages ---------------- */
+
+  regler(patch) {
+    Object.assign(this.reglages, patch);
+
+    if (patch.environnement) this.appliquerEnvironnement(patch.environnement);
+    if (patch.exposition !== undefined) this.viewer.renderer.toneMappingExposure = patch.exposition;
+    if (patch.ombres !== undefined || patch.sol !== undefined) this.majSol();
+    if (patch.reperes !== undefined) this.majReperes();
+    if (patch.occlusion !== undefined || patch.bloom !== undefined || patch.qualite !== undefined) {
+      this.majPostTraitement();
+    }
+  }
+}

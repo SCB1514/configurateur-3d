@@ -165,6 +165,9 @@
         <button class="tb-btn" id="btn-fit" title="Recadrer (F)">
           <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
         </button>
+        <button class="tb-btn" id="btn-render" title="Rendu et caméra">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v9l6.4 6.4M12 12l8.9-1.6M12 12l-7.4 5.2"/></svg>
+        </button>
       </div>
       <div class="tb-spacer"></div>
       <div class="tb-group hidden" id="grp-edit-mode">
@@ -184,6 +187,63 @@
       <button data-view="top">HAUT</button>
       <button data-view="front">FACE</button>
       <button data-view="right">DROITE</button>
+      <button data-view="oeil" title="Hauteur d'œil, depuis l'entrée">ŒIL</button>
+    </div>
+
+    <!-- ══════════ RENDU ET CAMÉRA ══════════ -->
+    <div id="render-panel" class="render-panel hidden">
+      <header>
+        <strong>Rendu et caméra</strong>
+        <button class="icon-btn" id="btn-render-close" title="Fermer">✕</button>
+      </header>
+
+      <div class="rp-block">
+        <label>Ambiance</label>
+        <div class="chips" id="env-chips"></div>
+      </div>
+
+      <div class="rp-block">
+        <div class="rp-field">
+          <span>Exposition</span>
+          <input type="range" id="rp-expo" min="0.35" max="2.2" step="0.05" />
+          <em id="rp-expo-val">—</em>
+        </div>
+        <div class="rp-field">
+          <span>Ombres</span>
+          <input type="range" id="rp-ombres" min="0" max="1" step="0.05" />
+          <em id="rp-ombres-val">—</em>
+        </div>
+        <div class="rp-field">
+          <span>Occlusion</span>
+          <input type="range" id="rp-ao" min="0" max="1.5" step="0.05" />
+          <em id="rp-ao-val">—</em>
+        </div>
+        <div class="rp-field">
+          <span>Éclat</span>
+          <input type="range" id="rp-bloom" min="0" max="0.8" step="0.02" />
+          <em id="rp-bloom-val">—</em>
+        </div>
+      </div>
+
+      <div class="rp-block">
+        <label>Caméra</label>
+        <div class="rp-field">
+          <span>Focale</span>
+          <input type="range" id="rp-focale" min="18" max="135" step="1" />
+          <em id="rp-focale-val">—</em>
+        </div>
+        <div class="rp-toggles">
+          <label class="rp-check"><input type="checkbox" id="rp-rotation" /> Rotation auto</label>
+          <label class="rp-check"><input type="checkbox" id="rp-sol" /> Sol</label>
+          <label class="rp-check"><input type="checkbox" id="rp-reperes" /> Repères</label>
+          <label class="rp-check"><input type="checkbox" id="rp-qualite" /> Qualité haute</label>
+        </div>
+      </div>
+
+      <footer class="rp-foot">
+        <button class="btn small" id="rp-reset">Réinitialiser</button>
+        <button class="btn small" id="rp-image">Enregistrer l'image</button>
+      </footer>
     </div>
   </main>
 

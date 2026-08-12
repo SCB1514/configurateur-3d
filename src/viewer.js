@@ -1,7 +1,8 @@
 import * as THREE from '../vendor/three/three.module.js';
 import { OrbitControls } from '../vendor/three/addons/controls/OrbitControls.js';
 import { TransformControls } from '../vendor/three/addons/controls/TransformControls.js';
-import { RoomEnvironment } from '../vendor/three/addons/environments/RoomEnvironment.js';
+import { Rendu } from './render.js';
+import { buildStandardMaterial, materialKey } from './library.js';
 
 /* ============================================================
    Viewer — scène 3D, pose des blocs, sélection, manipulation.
@@ -39,10 +40,13 @@ export class Viewer {
     /* ---------- scène ---------- */
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x0b0e13);
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    // L'environnement, le sol et le post-traitement sont posés par render.js,
+    // en fin de constructeur : ils ont besoin de la scène déjà montée.
 
-    this.camera = new THREE.PerspectiveCamera(45, 1, 0.05, 2000);
+    // Le rapport proche/lointain conditionne la précision du tampon de
+    // profondeur, donc la qualité de l'occlusion ambiante. Une salle de sport
+    // tient dans quelques dizaines de mètres : inutile de porter à 2 000.
+    this.camera = new THREE.PerspectiveCamera(38, 1, 0.05, 400);
     this.camera.up.set(0, 0, 1);
     this.camera.position.set(4.5, -6.5, 4.2);
 
@@ -53,29 +57,31 @@ export class Viewer {
     this.controls.target.set(0, 0, 0.4);
 
     /* ---------- lumières ---------- */
-    const hemi = new THREE.HemisphereLight(0xdfe8ff, 0x1a1f27, 0.85);
-    this.scene.add(hemi);
-    // Une seconde source, plus froide et rasante, détache les arêtes des capots.
-    const contre = new THREE.DirectionalLight(0x9fc4ff, 0.55);
+    // L'environnement de studio porte maintenant l'essentiel de l'éclairage :
+    // les sources directes ne servent plus qu'à sculpter et à porter l'ombre.
+    // Les laisser à leur ancienne puissance délaverait tous les reflets.
+    this.hemi = new THREE.HemisphereLight(0xdfe8ff, 0x1a1f27, 0.20);
+    this.scene.add(this.hemi);
+    const contre = new THREE.DirectionalLight(0x9fc4ff, 0.30);
     contre.position.set(-7, 5, 3);
     this.scene.add(contre);
-    const sun = new THREE.DirectionalLight(0xffffff, 2.1);
+    this.contre = contre;
+
+    const sun = new THREE.DirectionalLight(0xffffff, 1.7);
     sun.position.set(6, -8, 12);
     sun.castShadow = true;
+    // Le cadrage de l'ombre est ajusté à l'emprise réelle par Rendu.majSol().
     sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 60;
-    const d = 14;
-    Object.assign(sun.shadow.camera, { left: -d, right: d, top: d, bottom: -d });
-    sun.shadow.camera.updateProjectionMatrix();
-    sun.shadow.bias = -0.0008;
+    sun.shadow.bias = -0.0006;
+    sun.shadow.normalBias = 0.02;
     this.scene.add(sun);
     this.sun = sun;
 
     /* ---------- sol ---------- */
-    // Pas de plan récepteur d'ombre : hors du cadre d'ombre du soleil, un tel plan
-    // se peint intégralement en ombre douce et laisse une grande tache claire en
-    // surimpression. Les machines continuent de porter ombre les unes sur les autres.
+    // Le plan récepteur est posé par Rendu.majSol(), borné à l'emprise des
+    // machines et couplé au cadre d'ombre du soleil. Un plan plus large que ce
+    // cadre se peint intégralement en ombre douce et barre la vue : c'est ce
+    // qui avait imposé de le retirer la première fois.
 
     this.grid = new THREE.GridHelper(80, 80, 0x5d6b7d, 0x2e3946);
     this.grid.rotation.x = Math.PI / 2;
@@ -94,6 +100,7 @@ export class Viewer {
       })));
     }
     axes.position.z = 0.002;
+    axes.userData.axes = true;      // Rendu.majReperes() les masque pour présenter
     this.scene.add(axes);
 
     /* ---------- gizmo ---------- */
@@ -174,6 +181,15 @@ export class Viewer {
     canvas.addEventListener('pointerup', e => this._onUp(e));
     canvas.addEventListener('pointerleave', () => { if (this.ghost) this.ghost.visible = false; });
 
+    /* ---------- moteur de rendu ---------- */
+    this.rendu = new Rendu(this);
+    this.rendu.appliquerEnvironnement('studio');
+    // Le post-traitement arrive en différé : la scène doit rester utilisable
+    // même si la carte graphique refuse les cibles de rendu flottantes.
+    this.rendu.activerPostTraitement().catch(e => {
+      console.warn('Post-traitement indisponible, rendu direct :', e);
+    });
+
     const ro = new ResizeObserver(() => this.resize());
     ro.observe(canvas.parentElement);
     this.resize();
@@ -188,18 +204,71 @@ export class Viewer {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    this.rendu?.redimensionner(w, h);
   }
 
   _loop = () => {
     requestAnimationFrame(this._loop);
+    this._animerCamera();
     this.controls.update();
+    this._detecterMouvement();
     if (this.selected) {
       const b = this.boundsOf(this.selection);
       if (b) this.selBox.box.copy(b);
     }
     if (this.dimGroup) this._orientDimensions();
-    this.renderer.render(this.scene, this.camera);
+    this._suivreEmprise();
+    if (!this.rendu?.rendre()) this.renderer.render(this.scene, this.camera);
   };
+
+  /**
+   * Le sol et le cadre d'ombre suivent l'emprise des machines.
+   *
+   * On ne recalcule pas l'emprise à chaque image — c'est un parcours de tous
+   * les maillages — mais quatre fois par seconde, et on ne touche au sol que
+   * si elle a réellement bougé.
+   */
+  _suivreEmprise() {
+    const t = performance.now();
+    if (t - (this._empriseT || 0) < 250) return;
+    this._empriseT = t;
+
+    const b = this.bounds();
+    const clef = b ? [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z]
+      .map(v => v.toFixed(2)).join(',') : '';
+    if (clef === this._empriseClef) return;
+    this._empriseClef = clef;
+    this.rendu?.majSol();
+  }
+
+  /**
+   * La vue a-t-elle bougé depuis l'image précédente ?
+   *
+   * On compare une empreinte de la caméra plutôt que de s'abonner aux
+   * événements : l'orbite, l'inertie, un vol programmé et un changement de
+   * focale passent tous par là, sans qu'aucun ait à se déclarer.
+   */
+  _detecterMouvement() {
+    const p = this.camera.position, t = this.controls.target;
+    if (!this._camPrec) {
+      this._camPrec = { p: p.clone(), t: t.clone(), fov: this.camera.fov };
+      return;
+    }
+
+    // L'inertie de l'orbite décroît sans jamais atteindre zéro : comparer à
+    // la virgule près déclarerait la vue en mouvement perpétuel et
+    // l'occlusion ne reviendrait jamais. Le seuil suit la distance de recul.
+    const seuil = Math.max(p.distanceTo(t), 1) * 2e-4;
+    const bouge = p.distanceTo(this._camPrec.p) > seuil
+               || t.distanceTo(this._camPrec.t) > seuil
+               || Math.abs(this.camera.fov - this._camPrec.fov) > 1e-3;
+
+    if (!bouge) return;
+    this.rendu?.signalerMouvement();
+    this._camPrec.p.copy(p);
+    this._camPrec.t.copy(t);
+    this._camPrec.fov = this.camera.fov;
+  }
 
   setLibrary(lib) {
     this.lib = lib;
@@ -210,20 +279,10 @@ export class Viewer {
   /* ══════════ matériaux ══════════ */
   _material(part, finishColor) {
     const color = finishColor && part.paintable ? finishColor : part.color;
-    const key = `${color}|${part.opacity}|${part.metalness}|${part.roughness}`;
+    const key = materialKey(part, color);
     let m = this._materials.get(key);
     if (!m) {
-      m = new THREE.MeshStandardMaterial({
-        color: new THREE.Color(color),
-        metalness: part.metalness,
-        roughness: part.roughness,
-        transparent: part.opacity < 1,
-        opacity: part.opacity,
-        side: THREE.DoubleSide,
-        // L'environnement fait tout le rendu des reflets : sans lui, un métal
-        // rugueux paraît mat et un chrome paraît gris.
-        envMapIntensity: 1.15,
-      });
+      m = buildStandardMaterial(part, color);
       this._materials.set(key, m);
     }
     return m;
@@ -328,6 +387,7 @@ export class Viewer {
   _readTransform() {
     const obj = this.selected;
     if (!obj) return;
+    this.rendu?.signalerMouvement();
     const block = this.lib.block(obj.userData.blockId);
 
     // Déplacement de groupe.
@@ -466,11 +526,18 @@ export class Viewer {
     return out;
   }
 
-  /** Un connecteur est occupé si un autre bloc en a un au même endroit. */
+  /**
+   * Un connecteur est occupé si un autre bloc en a un ACCEPTABLE au même
+   * endroit. La règle d'occupation est celle de l'assemblage : un point
+   * universel occupé par une ancre A l'est bel et bien. Comparer les
+   * catégories à l'identique laissait libres tous les points universels,
+   * qui sont pourtant le cas courant.
+   */
   isOccupied(conn, all) {
     const tol = this.snapTol;
-    return (all || this.allConnectors(conn.uid))
-      .some(o => o.uid !== conn.uid && o.type === conn.type && o.pos.distanceTo(conn.pos) <= tol);
+    return (all || this.allConnectors(conn.uid)).some(o =>
+      o.uid !== conn.uid && Viewer.compatible(o.type, conn.type)
+      && o.pos.distanceTo(conn.pos) <= tol);
   }
 
   freeConnectors(uid) {
@@ -478,7 +545,55 @@ export class Viewer {
     if (!obj) return [];
     const others = this.allConnectors(uid);
     return this.worldConnectors(obj).filter(c => !others.some(
-      o => o.type === c.type && o.pos.distanceTo(c.pos) <= this.snapTol));
+      o => Viewer.compatible(o.type, c.type) && o.pos.distanceTo(c.pos) <= this.snapTol));
+  }
+
+  /** Position monde d'un connecteur d'un objet posé, ou null. */
+  connectorWorld(uid, index) {
+    const obj = this.objects.get(uid);
+    const c = this.lib?.block(obj?.userData.blockId)?.connectors?.[index];
+    if (!obj || !c) return null;
+    obj.updateMatrixWorld();
+    return c.pos.clone().applyMatrix4(obj.matrixWorld);
+  }
+
+  /**
+   * Ce qui est raccordé à un objet : les blocs dont le point d'ancrage se
+   * superpose à l'un de ses connecteurs, avec le connecteur porteur.
+   * Un remplacement s'en sert pour savoir où reposer la suite.
+   */
+  connectionsOn(uid) {
+    const obj = this.objects.get(uid);
+    if (!obj) return [];
+    const points = this.worldConnectors(obj);
+    if (!points.length) return [];
+    const tol = this.snapTol;
+    const out = [];
+
+    for (const [autre, o] of this.objects) {
+      if (autre === uid) continue;
+      const ancre = this._anchorOf(this.lib?.block(o.userData.blockId));
+      o.updateMatrixWorld();
+      const p = ancre.pos.clone().applyMatrix4(o.matrixWorld);
+      for (const c of points) {
+        if (!Viewer.compatible(c.type, ancre.type)) continue;
+        if (p.distanceTo(c.pos) > tol) continue;
+        out.push({ uid: autre, index: c.index, type: c.type, pos: c.pos.clone() });
+        break;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Un objet et, de proche en proche, tout ce qui s'y raccorde. Déplacer un
+   * bloc porteur doit emmener sa grappe, pas la laisser en l'air.
+   */
+  chainFrom(uid, vus = new Set()) {
+    if (vus.has(uid)) return vus;
+    vus.add(uid);
+    for (const l of this.connectionsOn(uid)) this.chainFrom(l.uid, vus);
+    return vus;
   }
 
   /** Deux points s'acceptent-ils ? Même catégorie, ou l'un des deux universel. */
@@ -677,7 +792,10 @@ export class Viewer {
     this.pointer.y = -((ev.clientY - r.top) / r.height) * 2 + 1;
   }
 
-  _onDown(ev) { this._down = { x: ev.clientX, y: ev.clientY, t: performance.now() }; }
+  _onDown(ev) {
+    this._vol = null;                       // la main de l'utilisateur prime sur un vol de camera
+    this._down = { x: ev.clientX, y: ev.clientY, t: performance.now() };
+  }
 
   _onMove(ev) {
     if (!this.ghost) return;
@@ -910,19 +1028,17 @@ export class Viewer {
     return b.isEmpty() ? null : b;
   }
 
-  fit(padding = 1.6) {
+  fit(padding = 1.6, anime = true) {
     const b = this.bounds();
-    if (!b) { this.setView('iso'); return; }
+    if (!b) { this.setView('iso', anime); return; }
     const c = b.getCenter(new THREE.Vector3());
     const r = Math.max(b.getSize(new THREE.Vector3()).length() * 0.5, 0.5);
     const dist = (r * padding) / Math.sin(this.camera.fov * DEG * 0.5);
     const dir = this.camera.position.clone().sub(this.controls.target).normalize();
-    this.controls.target.copy(c);
-    this.camera.position.copy(c).addScaledVector(dir, dist);
-    this.controls.update();
+    this._cadrer(c, c.clone().addScaledVector(dir, dist), anime);
   }
 
-  setView(kind) {
+  setView(kind, anime = true) {
     const b = this.bounds();
     const c = b ? b.getCenter(new THREE.Vector3()) : new THREE.Vector3(0, 0, 0.4);
     const r = b ? Math.max(b.getSize(new THREE.Vector3()).length() * 0.5, 0.8) : 2.5;
@@ -933,10 +1049,71 @@ export class Viewer {
       front: new THREE.Vector3(0, -1, 0.02),
       right: new THREE.Vector3(1, 0, 0.02),
     };
+
+    // Hauteur d'œil : ce que verra celui qui entre dans la salle. La caméra
+    // se place à 1,55 m du sol et regarde droit devant — pas en plongée sur
+    // un centre géométrique, sinon on retombe sur une vue de maquette.
+    if (kind === 'oeil' && b) {
+      const taille = b.getSize(new THREE.Vector3());
+      const z = b.min.z + 1.55;
+      const recul = Math.max(taille.y * 0.5 + r * 1.15, 3);
+      this._cadrer(new THREE.Vector3(c.x, c.y, z),
+                   new THREE.Vector3(c.x + recul * 0.30, c.y - recul, z), anime);
+      return;
+    }
+
     const d = (dirs[kind] || dirs.iso).clone().normalize();
-    this.controls.target.copy(c);
-    this.camera.position.copy(c).addScaledVector(d, dist);
-    this.controls.update();
+    this._cadrer(c, c.clone().addScaledVector(d, dist), anime);
+  }
+
+  /* ══════════ caméra ══════════ */
+
+  /**
+   * Focale en équivalent 24×36. Une machine se photographie au 50 ou au 85 :
+   * la perspective y est douce et les proportions justes. Le grand-angle
+   * étire les capots et fait paraître le châssis tordu.
+   */
+  setFocale(mm) {
+    const f = Math.min(200, Math.max(16, Number(mm) || 40));
+    this.camera.fov = 2 * Math.atan(12 / f) / DEG;
+    this.camera.updateProjectionMatrix();
+    return f;
+  }
+
+  get focale() { return 12 / Math.tan(this.camera.fov * DEG * 0.5); }
+
+  setRotationAuto(on, vitesse = 0.6) {
+    this.controls.autoRotate = !!on;
+    this.controls.autoRotateSpeed = vitesse;
+  }
+
+  get rotationAuto() { return !!this.controls.autoRotate; }
+
+  /** Déplacement de caméra, éventuellement animé. */
+  _cadrer(cible, position, anime = true) {
+    if (!anime) {
+      this._vol = null;
+      this.controls.target.copy(cible);
+      this.camera.position.copy(position);
+      this.controls.update();
+      return;
+    }
+    this._vol = {
+      t0: performance.now(), duree: 620,
+      c0: this.controls.target.clone(), c1: cible.clone(),
+      p0: this.camera.position.clone(), p1: position.clone(),
+    };
+  }
+
+  _animerCamera() {
+    const v = this._vol;
+    if (!v) return;
+    const k = Math.min(1, (performance.now() - v.t0) / v.duree);
+    // douceur aux deux bouts : on décolle et on se pose sans à-coup
+    const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+    this.controls.target.lerpVectors(v.c0, v.c1, e);
+    this.camera.position.lerpVectors(v.p0, v.p1, e);
+    if (k >= 1) this._vol = null;
   }
 
   snapshot(w = 1600) {
@@ -945,10 +1122,13 @@ export class Viewer {
     const prev = this.renderer.getPixelRatio();
     this.selBox.visible = false;
     const gz = this.gizmo.visible; this.gizmo.visible = false;
-    this.renderer.setPixelRatio(Math.min(w / el.clientWidth, 3));
-    this.renderer.render(this.scene, this.camera);
+    const pr = Math.min(w / el.clientWidth, 3);
+    this.renderer.setPixelRatio(pr);
+    this.rendu?.setPixelRatio(pr);
+    if (!this.rendu?.rendre(true)) this.renderer.render(this.scene, this.camera);
     const url = this.canvas.toDataURL('image/png');
     this.renderer.setPixelRatio(prev);
+    this.rendu?.setPixelRatio(prev);
     this.gizmo.visible = gz;
     this.selBox.visible = !!this.selected;
     this.resize();

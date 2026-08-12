@@ -348,3 +348,36 @@ body.viewonly #app,body.embed #app{grid-template-columns:1fr var(--insp-w)}
 body.viewonly .panel-foot.actions .btn-row,body.viewonly #btn-clear{display:none}
 #btn-edit-mode{color:var(--txt);font-weight:600}
 @media (max-width:880px){ body.viewonly #app,body.embed #app{grid-template-columns:1fr} }
+
+/* ---------- panneau « rendu et caméra » ----------
+   Il flotte au-dessus de la scène plutôt que de s'ajouter aux colonnes :
+   on règle une ambiance en regardant le résultat, pas en regardant un
+   formulaire, et l'aperçu doit rester le plus grand possible. */
+.render-panel{
+  position:absolute;left:12px;bottom:12px;z-index:4;width:266px;
+  background:rgba(21,26,33,.94);backdrop-filter:blur(12px);
+  border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);
+  display:flex;flex-direction:column;
+}
+.render-panel header{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:10px 12px;border-bottom:1px solid var(--line);
+}
+.render-panel header strong{font-size:12.5px;letter-spacing:.2px}
+.rp-block{padding:10px 12px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:7px}
+.rp-block > label{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--txt-dim)}
+.rp-block .chips{padding:0;gap:5px}
+.rp-field{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--txt-dim)}
+.rp-field span{flex:0 0 64px}
+.rp-field input[type=range]{flex:1 1 auto;min-width:0;accent-color:var(--accent)}
+.rp-field em{font-style:normal;font-size:10.5px;color:var(--txt);flex:0 0 42px;text-align:right;
+  font-variant-numeric:tabular-nums}
+.rp-toggles{display:grid;grid-template-columns:1fr 1fr;gap:5px 10px;margin-top:2px}
+.rp-check{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--txt-dim);cursor:pointer}
+.rp-check input{accent-color:var(--accent);margin:0}
+.rp-check:hover{color:var(--txt)}
+.rp-foot{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:10px 12px}
+
+@media (max-width:900px){
+  .render-panel{left:8px;right:8px;bottom:64px;width:auto}
+}

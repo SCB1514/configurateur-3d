@@ -6,7 +6,7 @@ ou demande un devis.
 
 **Tout se pilote depuis Rhino.** Le plug-in
 [`ConfigurateurPlanetFitnessPro`](../../ConfigurateurPlanetFitnessPro/README.md)
-(dossier `C:\Users\Shadow\Downloads\ConfigurateurPlanetFitnessPro`) gère la bibliothèque,
+(dossier voisin `ConfigurateurPlanetFitnessPro`) gère la bibliothèque,
 les coloris, les dispositions types et la mise en ligne. Ce dossier-ci n'est que le site
 publié : vous n'avez normalement jamais à y toucher.
 

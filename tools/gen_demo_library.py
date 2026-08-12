@@ -9,9 +9,12 @@ Elle sert a montrer le configurateur avant d'y publier le vrai catalogue.
 Depuis Rhino : commande PFPublication -> Publier en ligne.
 """
 
+import base64
 import json
 import math
 import os
+import struct
+import zlib
 
 # ---------------------------------------------------------------- geometrie
 
@@ -112,9 +115,65 @@ class Part(object):
         d = {"color": self.color, "positions": [round(v, 1) for v in self.pos],
              "normals": [round(v, 3) for v in self.nor], "indices": self.idx,
              "roughness": self.roughness, "metalness": self.metalness}
+        # Rattache la face a son materiau : c'est lui qui porte les textures.
+        # Dans Rhino le lien est explicite ; ici la palette suffit a le retrouver.
+        mat = MATERIAU_PAR_COULEUR.get(self.color)
+        if mat:
+            d["material"] = mat
         if self.paintable:
             d["paintable"] = True
         return d
+
+
+# ------------------------------------------------------------- textures
+# Images produites ici meme, sans dependance : un PNG en niveaux de gris se
+# resume a trois blocs et un zlib. Elles voyagent en `data:` dans le fichier,
+# comme le fera la publication depuis Rhino.
+
+def png_gris(largeur, hauteur, pixels):
+    """PNG 8 bits, niveaux de gris."""
+    brut = b"".join(b"\x00" + bytes(bytearray(pixels[y * largeur:(y + 1) * largeur]))
+                    for y in range(hauteur))
+
+    def bloc(tag, data):
+        corps = tag + data
+        return (struct.pack(">I", len(data)) + corps
+                + struct.pack(">I", zlib.crc32(corps) & 0xffffffff))
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + bloc(b"IHDR", struct.pack(">IIBBBBB", largeur, hauteur, 8, 0, 0, 0, 0))
+            + bloc(b"IDAT", zlib.compress(brut, 9))
+            + bloc(b"IEND", b""))
+
+
+def data_uri(png):
+    return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+
+
+def texture_bandes(n=128, periode=16, creux=60, plein=235):
+    """Relief d'un tapis : rainures transversales."""
+    px = []
+    for y in range(n):
+        px.extend([creux if (y % periode) < periode // 3 else plein] * n)
+    return png_gris(n, n, px)
+
+
+def texture_tissage(n=128, maille=8):
+    """Relief d'un garnissage : trame croisee."""
+    px = []
+    for y in range(n):
+        for x in range(n):
+            px.append(215 if ((x // maille) % 2) == ((y // maille) % 2) else 145)
+    return png_gris(n, n, px)
+
+
+def texture_brossage(n=128):
+    """Rugosite d'un acier brosse : stries verticales."""
+    graine, colonnes = 12345, []
+    for _ in range(n):
+        graine = (graine * 1103515245 + 12345) & 0x7fffffff
+        colonnes.append(150 + (graine >> 16) % 90)
+    return png_gris(n, n, colonnes * n)
 
 
 # ---------------------------------------------------------------- palette
@@ -126,6 +185,18 @@ FONTE = "#3A3F47"
 ECRAN = "#101319"
 CAOUTCHOUC = "#22252B"
 JAUNE = "#F2C500"
+
+# Chaque teinte de la palette EST un materiau du document : c'est ce lien que
+# le plug-in Rhino ecrit explicitement a l'export.
+MATERIAU_PAR_COULEUR = {
+    CHASSIS: "Chassis noir",
+    CAPOT: "Capotage",
+    GARNISSAGE: "Garnissage",
+    ACIER: "Acier",
+    FONTE: "Fonte",
+    ECRAN: "Ecran",
+    CAOUTCHOUC: "Caoutchouc",
+}
 
 COLORIS = [
     {"id": "violet", "name": "Violet", "color": "#5B2D8E"},
@@ -497,13 +568,19 @@ library = {
         {"id": "Capotage", "name": "Capotage peint", "color": CAPOT,
          "metalness": 0.05, "roughness": 0.45, "opacity": 1},
         {"id": "Garnissage", "name": "Garnissage", "color": GARNISSAGE,
-         "metalness": 0.0, "roughness": 0.85, "opacity": 1},
+         "metalness": 0.0, "roughness": 0.85, "opacity": 1,
+         "maps": {"bump": {"src": data_uri(texture_tissage()), "scale": 0.004},
+                  "worldSize": 120}},
         {"id": "Acier", "name": "Acier poli", "color": ACIER,
-         "metalness": 0.75, "roughness": 0.28, "opacity": 1},
+         "metalness": 0.75, "roughness": 0.28, "opacity": 1,
+         "maps": {"roughness": {"src": data_uri(texture_brossage())},
+                  "worldSize": 400}},
         {"id": "Fonte", "name": "Fonte", "color": FONTE,
          "metalness": 0.35, "roughness": 0.55, "opacity": 1},
         {"id": "Caoutchouc", "name": "Caoutchouc", "color": CAOUTCHOUC,
-         "metalness": 0.0, "roughness": 0.9, "opacity": 1},
+         "metalness": 0.0, "roughness": 0.9, "opacity": 1,
+         "maps": {"bump": {"src": data_uri(texture_bandes()), "scale": 0.012},
+                  "worldSize": 150}},
         {"id": "Ecran", "name": "Écran", "color": ECRAN,
          "metalness": 0.4, "roughness": 0.15, "opacity": 1},
     ],

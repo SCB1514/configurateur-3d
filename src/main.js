@@ -1,6 +1,7 @@
 import { loadLibrary, buildLibrary } from './library.js';
 import { DriveFolder, parseFolderId } from './drive.js';
 import { Viewer } from './viewer.js';
+import { ENVIRONNEMENTS } from './render.js';
 import { ThumbnailFactory } from './thumbnails.js';
 import { encodeState, decodeState, readHash, buildUrl } from './share.js';
 import { Plan } from './plan.js';
@@ -814,6 +815,148 @@ async function importSaves(file) {
   }
 }
 
+/* ══════════════════ rendu et caméra ══════════════════
+   Le réglage se fait à l'œil, sur la scène : le panneau flotte au-dessus
+   d'elle et chaque curseur agit sans validation. Les choix sont mémorisés
+   par navigateur — ils tiennent à l'usage de la personne, pas au projet,
+   et n'ont donc rien à faire dans le lien de partage.
+   ==================================================== */
+
+const CLE_RENDU = 'cfg3d:rendu';
+
+function wireRendu() {
+  const panneau = $('#render-panel');
+  const rendu = app.viewer.rendu;
+
+  $('#btn-render').onclick = () => {
+    panneau.classList.toggle('hidden');
+    $('#btn-render').classList.toggle('on', !panneau.classList.contains('hidden'));
+  };
+  $('#btn-render-close').onclick = () => {
+    panneau.classList.add('hidden');
+    $('#btn-render').classList.remove('on');
+  };
+
+  // les ambiances viennent de render.js : une seule source de vérité
+  const chips = $('#env-chips');
+  chips.innerHTML = '';
+  for (const [cle, reglage] of Object.entries(ENVIRONNEMENTS)) {
+    const chip = document.createElement('button');
+    chip.className = 'chip';
+    chip.dataset.env = cle;
+    chip.textContent = reglage.nom;
+    chip.onclick = () => {
+      rendu.regler({ environnement: cle });
+      refreshRendu();          // l'ambiance impose sa propre exposition
+      sauverRendu();
+    };
+    chips.appendChild(chip);
+  }
+
+  const curseur = (id, champ, format) => {
+    const input = $(id);
+    input.oninput = () => {
+      const v = Number(input.value);
+      rendu.regler({ [champ]: v });
+      $(id + '-val').textContent = format(v);
+    };
+    input.onchange = sauverRendu;
+  };
+  curseur('#rp-expo', 'exposition', v => v.toFixed(2));
+  curseur('#rp-ombres', 'ombres', v => Math.round(v * 100) + '%');
+  curseur('#rp-ao', 'occlusion', v => Math.round(v * 100) + '%');
+  curseur('#rp-bloom', 'bloom', v => Math.round(v * 125) + '%');
+
+  $('#rp-focale').oninput = e => {
+    const mm = app.viewer.setFocale(Number(e.target.value));
+    $('#rp-focale-val').textContent = Math.round(mm) + ' mm';
+  };
+  $('#rp-focale').onchange = sauverRendu;
+
+  $('#rp-rotation').onchange = e => { app.viewer.setRotationAuto(e.target.checked); sauverRendu(); };
+  $('#rp-sol').onchange = e => { rendu.regler({ sol: e.target.checked }); sauverRendu(); };
+  $('#rp-reperes').onchange = e => { rendu.regler({ reperes: e.target.checked }); sauverRendu(); };
+  $('#rp-qualite').onchange = e => {
+    rendu.regler({ qualite: e.target.checked ? 'haute' : 'rapide' });
+    sauverRendu();
+  };
+
+  $('#rp-reset').onclick = () => {
+    rendu.regler({ ombres: 0.7, occlusion: 0.7, bloom: 0.2, sol: true,
+                   reperes: true, qualite: 'haute' });
+    rendu.appliquerEnvironnement('studio');
+    app.viewer.setFocale(40);
+    app.viewer.setRotationAuto(false);
+    refreshRendu();
+    sauverRendu();
+  };
+
+  $('#rp-image').onclick = () => {
+    const { url } = app.viewer.snapshot(2400);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (app.lib?.name || 'configuration').replace(/[^\w-]+/g, '-') + '.png';
+    a.click();
+    toast('Image enregistrée');
+  };
+
+  chargerRendu();
+  refreshRendu();
+}
+
+/** Remet les commandes au diapason de l'état réel du moteur. */
+function refreshRendu() {
+  const r = app.viewer.rendu.reglages;
+
+  $$('#env-chips .chip').forEach(c => c.classList.toggle('on', c.dataset.env === r.environnement));
+
+  const poser = (id, valeur, texte) => { $(id).value = valeur; $(id + '-val').textContent = texte; };
+  poser('#rp-expo', r.exposition, r.exposition.toFixed(2));
+  poser('#rp-ombres', r.ombres, Math.round(r.ombres * 100) + '%');
+  poser('#rp-ao', r.occlusion, Math.round(r.occlusion * 100) + '%');
+  poser('#rp-bloom', r.bloom, Math.round(r.bloom * 125) + '%');
+
+  const mm = Math.round(app.viewer.focale);
+  poser('#rp-focale', mm, mm + ' mm');
+
+  $('#rp-rotation').checked = app.viewer.rotationAuto;
+  $('#rp-sol').checked = r.sol;
+  $('#rp-reperes').checked = r.reperes;
+  $('#rp-qualite').checked = r.qualite === 'haute';
+}
+
+function sauverRendu() {
+  try {
+    localStorage.setItem(CLE_RENDU, JSON.stringify({
+      ...app.viewer.rendu.reglages,
+      focale: Math.round(app.viewer.focale),
+      rotation: app.viewer.rotationAuto,
+    }));
+  } catch { /* quota */ }
+}
+
+function chargerRendu() {
+  let memo;
+  try { memo = JSON.parse(localStorage.getItem(CLE_RENDU) || 'null'); } catch { return; }
+  if (!memo) return;
+
+  // On ne reprend que des clés connues : un stockage ancien ou trafiqué ne
+  // doit pas pouvoir injecter n'importe quoi dans le moteur.
+  const patch = {};
+  for (const cle of ['environnement', 'exposition', 'ombres', 'occlusion', 'bloom',
+                     'sol', 'reperes', 'qualite']) {
+    if (memo[cle] !== undefined) patch[cle] = memo[cle];
+  }
+  if (patch.environnement && !ENVIRONNEMENTS[patch.environnement]) delete patch.environnement;
+
+  // l'ambiance d'abord : elle repose exposition, soleil et sol
+  if (patch.environnement) app.viewer.rendu.appliquerEnvironnement(patch.environnement);
+  app.viewer.rendu.regler(patch);
+
+  if (memo.focale) app.viewer.setFocale(memo.focale);
+  if (memo.rotation) app.viewer.setRotationAuto(true);
+}
+
 /* ══════════════════ fond de plan ══════════════════
    Le plan de la salle, posé au sol : on implante les machines dessus.
    Image ou DXF — le DXF est un format texte, lu sans dépendance extérieure.
@@ -1238,6 +1381,7 @@ function wireUI() {
   };
 
   wirePlan();
+  wireRendu();
 
   $('#preset-select').onchange = describePreset;
   $('#btn-preset-load').onclick = () => {
