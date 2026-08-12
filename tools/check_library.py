@@ -78,11 +78,12 @@ def main():
             if not t:
                 erreurs.append("%s : point d'insertion sans lettre" % bid)
                 continue
-            p, d = c.get("pos"), c.get("dir")
+            p = c.get("pos")
             if not (isinstance(p, list) and len(p) == 3):
                 erreurs.append("%s : point %s sans position" % (bid, t))
-            if not (isinstance(d, list) and len(d) == 3) or all(abs(v) < 1e-9 for v in (d or [0, 0, 0])):
-                erreurs.append("%s : point %s sans direction" % (bid, t))
+            # Le modele en vigueur n'a plus de direction : le point principal est
+            # l'origine du bloc, les points natifs sont universels. Un « dir »
+            # residuel d'un ancien export est simplement ignore.
             points.setdefault(t, []).append(bid)
 
     n_conn = sum(len(b.get("connectors") or []) for b in blocks)
@@ -96,7 +97,7 @@ def main():
         print("  Points d'insertion :")
         for t in sorted(points):
             noms = sorted(set(points[t]))
-            if len(noms) < 2:
+            if len(noms) < 2 and t != "*":
                 alertes.append("point %s : un seul bloc (%s) — rien a connecter" % (t, noms[0]))
             print("    %-3s %2d bloc(s) : %s" % (t, len(noms), ", ".join(noms[:6])
                                                  + (" ..." if len(noms) > 6 else "")))
