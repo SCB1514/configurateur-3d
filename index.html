@@ -56,6 +56,35 @@
       <small id="preset-note"></small>
     </div>
 
+    <div class="plan-row" id="plan-row">
+      <div class="plan-head">
+        <label>Fond de plan</label>
+        <button class="link-btn" id="btn-plan-open">Importer...</button>
+      </div>
+      <input type="file" id="plan-file" accept=".png,.jpg,.jpeg,.webp,.dxf" hidden />
+      <div id="plan-controls" class="plan-controls hidden">
+        <div class="plan-name" id="plan-name">-</div>
+        <div class="plan-field">
+          <span>Largeur reelle</span>
+          <input type="number" id="plan-width" min="0.1" step="100" />
+          <em id="plan-unit">mm</em>
+        </div>
+        <div class="plan-field">
+          <span>Rotation</span>
+          <input type="number" id="plan-rot" step="15" />
+          <em>&deg;</em>
+        </div>
+        <div class="plan-field">
+          <span>Opacite</span>
+          <input type="range" id="plan-opacity" min="10" max="100" step="5" />
+        </div>
+        <div class="plan-actions">
+          <button class="btn small" id="btn-plan-toggle">Masquer</button>
+          <button class="btn small" id="btn-plan-clear">Retirer</button>
+        </div>
+      </div>
+    </div>
+
     <div class="search-row">
       <input type="search" id="search" placeholder="Rechercher un bloc…" autocomplete="off" />
     </div>

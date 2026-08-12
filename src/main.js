@@ -3,6 +3,7 @@ import { DriveFolder, parseFolderId } from './drive.js';
 import { Viewer } from './viewer.js';
 import { ThumbnailFactory } from './thumbnails.js';
 import { encodeState, decodeState, readHash, buildUrl } from './share.js';
+import { Plan } from './plan.js';
 import { download, downloadDataUrl, compositionJSON, exportOBJ, quoteText, fmt } from './exporters.js';
 
 /* ============================================================
@@ -58,6 +59,7 @@ async function boot() {
   });
   app.viewer.setEditable(!app.viewonly);
   app.thumbs = new ThumbnailFactory(256);
+  app.plan = new Plan(app.viewer);
   wireUI();
 
   // la configuration partagée peut désigner la bibliothèque à ouvrir
@@ -158,6 +160,20 @@ async function activateLibrary(key) {
   renderCatalog();
   renderMaterials();
   renderSaves();
+  if (app.plan) chargerPlanEnregistre();
+
+  // Les vignettes sont des captures : rendues avant que les images de texture
+  // soient décodées, elles figeraient des blocs sans matière. On les reprend
+  // une fois toutes les textures arrivées.
+  if (lib.hasTextures) {
+    lib.whenTexturesReady(() => {
+      if (app.lib !== lib) return;              // l'utilisateur a changé de bibliothèque
+      app.thumbs.cache.clear();
+      app.thumbs.matCache.clear();
+      renderCatalog();
+      renderMaterials();
+    });
+  }
 }
 
 function renderLibrarySwitch() {
@@ -351,8 +367,12 @@ function clearCompatible() {
 
 /**
  * Remplace l'élément sélectionné par un autre bloc, en conservant sa position,
- * sa rotation et son coloris. Si le nouveau bloc porte le même point
- * d'insertion, il se raccorde exactement comme l'ancien.
+ * sa rotation et son coloris — et en rattrapant ce qui était raccordé à lui.
+ *
+ * Les machines posées sur ses points d'insertion suivent le point homologue du
+ * nouveau bloc, avec leur propre grappe. Sans homologue, elles restent où elles
+ * sont et le message le dit : mieux vaut un décompte franc qu'un « connexions
+ * conservées » démenti par la vue.
  */
 function replaceSelected(blockId) {
   const uid = app.compat?.uid;
@@ -361,6 +381,9 @@ function replaceSelected(blockId) {
   if (!ancien || !nouveau) return;
 
   const avant = app.lib.block(ancien.blockId);
+  // Relevé AVANT l'échange : après, les points de l'ancien bloc n'existent plus.
+  const liens = app.viewer.connectionsOn(uid);
+
   const remplacant = {
     ...ancien,
     blockId,
@@ -371,15 +394,68 @@ function replaceSelected(blockId) {
 
   app.state.items[app.state.items.findIndex(i => i.uid === uid)] = remplacant;
   app.viewer.updateItem(remplacant);
+
+  const { repris, orphelins } = reconnecter(uid, avant, nouveau, liens);
   app.viewer.select(uid);
   pushHistory();
   refreshAll();
 
-  const memePoint = nouveau.connectorTypes.some(t => avant.connectorTypes.includes(t));
-  toast(memePoint
-    ? `Remplacé par « ${nouveau.name} » — connexions conservées`
-    : `Remplacé par « ${nouveau.name} » — points d'insertion différents`);
+  toast(`Remplacé par « ${nouveau.name} »` + bilanRaccordements(repris, orphelins));
   showCompatible(uid);
+}
+
+function bilanRaccordements(repris, orphelins) {
+  if (!repris && !orphelins) return '';
+  if (!repris) {
+    return ` — ${orphelins} raccordement${pluriel(orphelins)} sans équivalent, `
+      + `laissé${pluriel(orphelins)} en place`;
+  }
+  return ` — ${repris} raccordement${pluriel(repris)} repris`
+    + (orphelins ? `, ${orphelins} sans équivalent` : '');
+}
+
+const pluriel = n => (n > 1 ? 's' : '');
+
+/**
+ * Repose sur le nouveau bloc ce qui pendait à l'ancien.
+ *
+ * Les points sont appariés par catégorie et par rang : le deuxième point
+ * universel de l'ancien bloc devient le deuxième du nouveau. C'est l'ordre
+ * dans lequel Rhino les livre, donc celui que l'utilisateur a sous les yeux.
+ */
+function reconnecter(uid, avant, nouveau, liens) {
+  let repris = 0, orphelins = 0;
+  const deja = new Set([uid]);
+
+  for (const lien of liens) {
+    const cible = connecteurHomologue(avant, nouveau, lien.index);
+    const versMonde = cible ? app.viewer.connectorWorld(uid, cible.index) : null;
+    if (!versMonde) { orphelins++; continue; }
+
+    const ecart = versMonde.clone().sub(lien.pos);
+    // la grappe suit le porteur : déplacer la seule machine la détacherait
+    // de tout ce qu'elle porte à son tour
+    const grappe = [...app.viewer.chainFrom(lien.uid, new Set(deja))].filter(u => u !== uid);
+    for (const u of grappe) {
+      if (deja.has(u)) continue;
+      deja.add(u);
+      const it = find(u);
+      if (!it) continue;
+      it.pos = [r4(it.pos[0] + ecart.x), r4(it.pos[1] + ecart.y), r4(it.pos[2] + ecart.z)];
+    }
+    repris++;
+  }
+
+  if (repris) app.viewer.syncAll(app.state.items);
+  return { repris, orphelins };
+}
+
+/** Le point du nouveau bloc qui joue le rôle du point n° index de l'ancien. */
+function connecteurHomologue(avant, nouveau, index) {
+  const c = avant.connectors[index];
+  if (!c) return null;
+  const rang = avant.connectors.filter(x => x.type === c.type).indexOf(c);
+  return nouveau.connectors.filter(x => x.type === c.type)[rang] || null;
 }
 
 function attachCompatible(blockId) {
@@ -738,6 +814,114 @@ async function importSaves(file) {
   }
 }
 
+/* ══════════════════ fond de plan ══════════════════
+   Le plan de la salle, posé au sol : on implante les machines dessus.
+   Image ou DXF — le DXF est un format texte, lu sans dépendance extérieure.
+   ================================================== */
+function wirePlan() {
+  $('#btn-plan-open').onclick = () => $('#plan-file').click();
+  $('#plan-file').onchange = e => {
+    const fichier = e.target.files?.[0];
+    if (fichier) importerPlan(fichier);
+    e.target.value = '';
+  };
+
+  $('#plan-width').onchange = e => {
+    const largeur = Number(e.target.value);
+    if (largeur > 0) { app.plan.regler({ largeur }); sauverPlan(); }
+  };
+  $('#plan-rot').onchange = e => {
+    app.plan.regler({ rotation: Number(e.target.value) || 0 });
+    sauverPlan();
+  };
+  $('#plan-opacity').oninput = e => app.plan.regler({ opacite: Number(e.target.value) / 100 });
+  $('#plan-opacity').onchange = sauverPlan;
+
+  $('#btn-plan-toggle').onclick = () => {
+    app.plan.regler({ visible: !app.plan.etat.visible });
+    refreshPlan();
+    sauverPlan();
+  };
+  $('#btn-plan-clear').onclick = () => {
+    if (!app.plan.charge) return;
+    if (!confirm('Retirer le fond de plan ?')) return;
+    app.plan.vider();
+    refreshPlan();
+    sauverPlan();
+  };
+}
+
+async function importerPlan(fichier) {
+  const nom = fichier.name;
+  const extension = nom.split('.').pop().toLowerCase();
+
+  try {
+    if (extension === 'dxf') {
+      const info = app.plan.chargerDXF(await fichier.text(), nom);
+      toast(`${nom} — ${info.segments} traits`);
+    } else {
+      const dataUrl = await new Promise((ok, ko) => {
+        const lecteur = new FileReader();
+        lecteur.onload = () => ok(lecteur.result);
+        lecteur.onerror = () => ko(new Error('Fichier illisible'));
+        lecteur.readAsDataURL(fichier);
+      });
+      const info = await app.plan.chargerImage(dataUrl, nom);
+      toast(`${nom} — ${info.largeurPixels} x ${info.hauteurPixels} px`);
+    }
+
+    // largeur de départ : l'emprise des machines posées, sinon dix mètres
+    const b = app.viewer.bounds();
+    const defaut = b ? Math.round((b.max.x - b.min.x) / app.lib.scale) || 10000 : 10000;
+    app.plan.regler({ largeur: defaut });
+    refreshPlan();
+    sauverPlan();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+function refreshPlan() {
+  const controles = $('#plan-controls');
+  controles.classList.toggle('hidden', !app.plan?.charge);
+  if (!app.plan?.charge) return;
+
+  const etat = app.plan.etat;
+  $('#plan-name').textContent = etat.nom;
+  $('#plan-unit').textContent = app.lib.units;
+  $('#plan-width').value = Math.round(etat.largeur);
+  $('#plan-rot').value = etat.rotation;
+  $('#plan-opacity').value = Math.round(etat.opacite * 100);
+  $('#btn-plan-toggle').textContent = etat.visible ? 'Masquer' : 'Afficher';
+}
+
+const CLE_PLAN = () => 'cfg3d:plan:' + app.libKey;
+
+function sauverPlan() {
+  try {
+    const donnees = app.plan.serialiser();
+    if (!donnees) return localStorage.removeItem(CLE_PLAN());
+
+    const texte = JSON.stringify(donnees);
+    // Au-delà de deux mégaoctets le stockage du navigateur refuse : le plan
+    // reste valable pour la séance, mais ne sera pas retrouvé ensuite.
+    if (texte.length > 2000000) {
+      localStorage.removeItem(CLE_PLAN());
+      toast('Plan trop lourd pour être mémorisé — valable cette séance', true);
+      return;
+    }
+    localStorage.setItem(CLE_PLAN(), texte);
+  } catch { /* quota */ }
+}
+
+function chargerPlanEnregistre() {
+  try {
+    const texte = localStorage.getItem(CLE_PLAN());
+    if (texte) app.plan.restaurer(JSON.parse(texte));
+  } catch { /* illisible */ }
+  refreshPlan();
+}
+
 /* ══════════════════ matériaux ══════════════════
    La palette vient de Rhino : on ne la réinvente pas, on l'applique.
    ============================================== */
@@ -752,16 +936,25 @@ function renderMaterials() {
     const li = document.createElement('li');
     li.title = `${m.name} — métal ${m.metalness}, rugosité ${m.roughness}`
              + (m.opacity < 1 ? `, opacité ${m.opacity}` : '');
-    const dot = document.createElement('span');
-    dot.className = 'mat-dot';
-    dot.style.background = m.color;
+    li.dataset.color = m.color;
+
+    // Aperçu rendu : une sphère de la matière, pas un aplat de couleur.
+    const vignette = document.createElement('img');
+    vignette.className = 'mat-thumb';
+    vignette.alt = '';
+    vignette.style.background = m.color;      // le temps que le rendu arrive
+    try {
+      const url = app.thumbs.renderMaterial(m);
+      if (url) vignette.src = url;
+    } catch (err) { console.warn('aperçu matériau', m.id, err); }
+
     const nom = document.createElement('span');
     nom.className = 'mat-name';
     nom.textContent = m.name;
     const props = document.createElement('span');
     props.className = 'mat-props';
     props.textContent = m.metalness > 0.5 ? 'métal' : (m.roughness < 0.3 ? 'brillant' : 'mat');
-    li.append(dot, nom, props);
+    li.append(vignette, nom, props);
     li.onclick = () => {
       const it = find(app.selected);
       if (!it) return toast('Sélectionnez d’abord un élément', true);
@@ -772,6 +965,20 @@ function renderMaterials() {
     };
     list.appendChild(li);
   }
+  markAppliedMaterial();
+}
+
+/** Souligne, dans la liste, le matériau porté par l'élément sélectionné. */
+function markAppliedMaterial() {
+  const applique = (find(app.selected) || {}).color;
+  for (const li of $$('#materials-list li')) {
+    li.classList.toggle('on', !!applique && sameColor(applique, li.dataset.color || ''));
+  }
+}
+
+/** Deux écritures de couleur désignent-elles la même teinte ? */
+function sameColor(a, b) {
+  return String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
 }
 
 /* ══════════════════ sélection ══════════════════ */
@@ -796,6 +1003,7 @@ function refreshDimensions() {
 function refreshSelectionPanel() {
   const box = $('#selection-box');
   const it = find(app.selected);
+  markAppliedMaterial();
   if (!it) { box.classList.add('hidden'); return; }
 
   // À plusieurs, on annonce l'ensemble et son encombrement global.
@@ -946,6 +1154,8 @@ function wireUI() {
     app.viewer.updateItem(it);
     pushHistory(); refreshSelectionPanel();
   };
+
+  wirePlan();
 
   $('#preset-select').onchange = describePreset;
   $('#btn-preset-load').onclick = () => {
@@ -1208,6 +1418,7 @@ function toast(msg, err = false) {
 }
 
 const r = v => Math.round(v * 1000) / 1000;
+const r4 = v => Math.round(v * 1e4) / 1e4;
 const slug = s => (s || 'configuration').toLowerCase().normalize('NFD')
   .replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 function escapeHtml(s) {
