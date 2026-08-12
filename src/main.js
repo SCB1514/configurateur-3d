@@ -842,6 +842,20 @@ function wirePlan() {
     refreshPlan();
     sauverPlan();
   };
+  $('#plan-page').onchange = async e => {
+    const page = Number(e.target.value);
+    if (!app.plan.charge || !(page > 0) || !app.plan._pdfDonnees) return;
+    try {
+      const reglages = { ...app.plan.etat };
+      const info = await app.plan.chargerPDF(app.plan._pdfDonnees, reglages.nom, page);
+      app.plan.regler({ largeur: reglages.largeur, rotation: reglages.rotation,
+                        opacite: reglages.opacite, visible: reglages.visible });
+      refreshPlan();
+      sauverPlan();
+      toast(`Page ${info.page} sur ${info.pages}`);
+    } catch (err) { toast(err.message, true); }
+  };
+
   $('#btn-plan-calibrate').onclick = calibrerPlan;
 
   $('#btn-plan-clear').onclick = () => {
@@ -861,6 +875,13 @@ async function importerPlan(fichier) {
     if (extension === 'dxf') {
       const info = app.plan.chargerDXF(await fichier.text(), nom);
       toast(`${nom} — ${info.segments} traits`);
+    } else if (extension === 'pdf') {
+      toast('Lecture du PDF…');
+      const donnees = new Uint8Array(await fichier.arrayBuffer());
+      const info = await app.plan.chargerPDF(donnees, nom, 1);
+      toast(info.pages > 1
+        ? `${nom} — page 1 sur ${info.pages}`
+        : `${nom} — ${info.largeurPixels} x ${info.hauteurPixels} px`);
     } else {
       const dataUrl = await new Promise((ok, ko) => {
         const lecteur = new FileReader();
@@ -937,8 +958,23 @@ function refreshPlan() {
   $('#plan-unit').textContent = app.lib.units;
   $('#plan-width').value = Math.round(etat.largeur);
   $('#plan-rot').value = etat.rotation;
+  majPages();
   $('#plan-opacity').value = Math.round(etat.opacite * 100);
   $('#btn-plan-toggle').textContent = etat.visible ? 'Masquer' : 'Afficher';
+}
+
+/** Sélecteur de page, montré seulement quand le PDF en compte plusieurs. */
+function majPages() {
+  const ligne = $('#plan-page-row');
+  const etat = app.plan.etat;
+  const multiple = etat.pages > 1;
+  ligne.classList.toggle('hidden', !multiple);
+  if (!multiple) return;
+
+  const champ = $('#plan-page');
+  champ.max = etat.pages;
+  champ.value = etat.page || 1;
+  $('#plan-pages').textContent = '/ ' + etat.pages;
 }
 
 const CLE_PLAN = () => 'cfg3d:plan:' + app.libKey;

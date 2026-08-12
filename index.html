@@ -17,7 +17,8 @@
   style-src 'self' 'unsafe-inline';
   img-src 'self' data: blob:;
   font-src 'self';
-  connect-src 'self' https://www.googleapis.com;
+  connect-src 'self' https://www.googleapis.com blob:;
+  worker-src 'self' blob:;
   media-src 'self';
   object-src 'none';
   base-uri 'none';
@@ -61,13 +62,18 @@
         <label>Fond de plan</label>
         <button class="link-btn" id="btn-plan-open">Importer...</button>
       </div>
-      <input type="file" id="plan-file" accept=".png,.jpg,.jpeg,.webp,.dxf" hidden />
+      <input type="file" id="plan-file" accept=".png,.jpg,.jpeg,.webp,.dxf,.pdf" hidden />
       <div id="plan-controls" class="plan-controls hidden">
         <div class="plan-name" id="plan-name">-</div>
         <div class="plan-field">
           <span>Largeur reelle</span>
           <input type="number" id="plan-width" min="0.1" step="100" />
           <em id="plan-unit">mm</em>
+        </div>
+        <div class="plan-field hidden" id="plan-page-row">
+          <span>Page</span>
+          <input type="number" id="plan-page" min="1" step="1" value="1" />
+          <em id="plan-pages"></em>
         </div>
         <div class="plan-field">
           <span>Rotation</span>

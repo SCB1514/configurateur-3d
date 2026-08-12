@@ -191,6 +191,52 @@ export class Plan {
     return { largeurPixels: image.width, hauteurPixels: image.height };
   }
 
+  /**
+   * Rend une page de PDF et la pose comme fond de plan.
+   *
+   * pdf.js est embarqué dans vendor/ et chargé seulement au premier PDF
+   * ouvert : un mégaoctet et demi n'a rien à faire dans le démarrage de
+   * ceux qui n'importeront jamais de plan.
+   */
+  async chargerPDF(donnees, nom, page = 1) {
+    // on garde les octets : changer de page ne doit pas redemander le fichier
+    this._pdfDonnees = donnees.slice ? donnees.slice() : donnees;
+
+    const pdfjs = await Plan._pdfjs();
+    const document = await pdfjs.getDocument({ data: donnees }).promise;
+
+    const numero = Math.min(Math.max(1, page), document.numPages);
+    const feuille = await document.getPage(numero);
+
+    // On vise environ 2400 px de large : au-delà, le gain de finesse ne se
+    // voit plus au sol et l'image devient trop lourde pour être mémorisée.
+    const brut = feuille.getViewport({ scale: 1 });
+    const vue = feuille.getViewport({ scale: Math.min(4, 2400 / brut.width) });
+
+    const toile = window.document.createElement('canvas');
+    toile.width = Math.round(vue.width);
+    toile.height = Math.round(vue.height);
+    const contexte = toile.getContext('2d');
+    contexte.fillStyle = '#ffffff';                 // un PDF est transparent par défaut
+    contexte.fillRect(0, 0, toile.width, toile.height);
+    await feuille.render({ canvasContext: contexte, viewport: vue }).promise;
+
+    const info = await this.chargerImage(toile.toDataURL('image/png'), nom);
+    this.etat.page = numero;
+    this.etat.pages = document.numPages;
+    return { ...info, page: numero, pages: document.numPages };
+  }
+
+  /** pdf.js, chargé une seule fois, à la demande. */
+  static async _pdfjs() {
+    if (Plan.__pdfjs) return Plan.__pdfjs;
+    const module = await import('../vendor/pdfjs/pdf.min.mjs');
+    module.GlobalWorkerOptions.workerSrc = new URL(
+      '../vendor/pdfjs/pdf.worker.min.mjs', import.meta.url).href;
+    Plan.__pdfjs = module;
+    return module;
+  }
+
   /** Redessine un DXF au sol. */
   chargerDXF(texte, nom) {
     const segments = lireDXF(texte);
