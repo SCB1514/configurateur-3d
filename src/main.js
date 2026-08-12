@@ -842,6 +842,8 @@ function wirePlan() {
     refreshPlan();
     sauverPlan();
   };
+  $('#btn-plan-calibrate').onclick = calibrerPlan;
+
   $('#btn-plan-clear').onclick = () => {
     if (!app.plan.charge) return;
     if (!confirm('Retirer le fond de plan ?')) return;
@@ -878,6 +880,50 @@ async function importerPlan(fichier) {
     sauverPlan();
   } catch (e) {
     toast(e.message, true);
+  }
+}
+
+/**
+ * Cale le plan sur une distance connue.
+ *
+ * On mesure ce dont on est sûr — une porte, une trame, un mur — plutôt que
+ * de deviner la largeur totale du document, qui inclut souvent un cartouche
+ * et des marges.
+ */
+async function calibrerPlan() {
+  if (!app.plan?.charge) return;
+
+  const bouton = $('#btn-plan-calibrate');
+  bouton.classList.add('on');
+  bouton.textContent = 'Cliquez le 1er point…';
+  toast('Cliquez deux points de distance connue — Échap pour annuler');
+
+  const suivi = setInterval(() => {
+    if (app.plan.enCalibration) bouton.textContent = 'Cliquez le 2e point…';
+  }, 400);
+
+  const mesure = await app.plan.calibrer();
+  clearInterval(suivi);
+  bouton.classList.remove('on');
+  bouton.textContent = 'Calibrer sur 2 points';
+
+  if (!mesure) return toast('Calibration annulée');
+
+  const actuelle = Math.round(mesure / app.lib.scale);
+  const saisie = prompt(
+    `Distance réelle entre ces deux points, en ${app.lib.units} ?`, String(actuelle));
+  if (!saisie) { app.plan.annulerCalibration(); return toast('Calibration annulée'); }
+
+  const reelle = Number(String(saisie).replace(',', '.'));
+  if (!(reelle > 0)) { app.plan.annulerCalibration(); return toast('Distance invalide', true); }
+
+  if (app.plan.appliquerCalibration(mesure, reelle)) {
+    refreshPlan();
+    sauverPlan();
+    toast(`Plan calé : ${actuelle} → ${Math.round(reelle)} ${app.lib.units}`);
+  } else {
+    app.plan.annulerCalibration();
+    toast('Calibration impossible', true);
   }
 }
 

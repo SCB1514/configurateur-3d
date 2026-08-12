@@ -279,6 +279,128 @@ export class Plan {
     this.group.traverse(o => { o.raycast = () => {}; });
   }
 
+  /* ══════════ calibration ══════════
+     Deux points cliqués sur le plan, la distance réelle entre eux, et
+     l'échelle s'ajuste. C'est la façon dont on cale un fond de plan :
+     on mesure ce qu'on connaît — une porte, une trame, un mur — plutôt
+     que de deviner la largeur totale du document.
+     ================================ */
+
+  /**
+   * Entre en calibration. Renvoie une promesse qui livre la distance
+   * mesurée entre les deux points, en mètres, ou null si l'utilisateur
+   * abandonne.
+   */
+  calibrer() {
+    if (!this.charge) return Promise.resolve(null);
+    const v = this.viewer;
+    const canvas = v.canvas;
+
+    this._arreterCalibration();
+    this._reperes = new THREE.Group();
+    this._reperes.renderOrder = 997;
+    v.scene.add(this._reperes);
+
+    const points = [];
+    const plan = new THREE.Plane(new THREE.Vector3(0, 0, 1), -this.etat.z);
+
+    return new Promise(resolve => {
+      let depart = null;
+
+      const surPlan = ev => {
+        const r = canvas.getBoundingClientRect();
+        v.pointer.x = ((ev.clientX - r.left) / r.width) * 2 - 1;
+        v.pointer.y = -((ev.clientY - r.top) / r.height) * 2 + 1;
+        v.ray.setFromCamera(v.pointer, v.camera);
+        const p = new THREE.Vector3();
+        return v.ray.ray.intersectPlane(plan, p) ? p : null;
+      };
+
+      const bas = ev => { depart = { x: ev.clientX, y: ev.clientY }; };
+
+      const haut = ev => {
+        if (!depart) return;
+        const bouge = Math.hypot(ev.clientX - depart.x, ev.clientY - depart.y);
+        depart = null;
+        if (bouge > 5) return;                 // c'était une orbite, pas un clic
+
+        const p = surPlan(ev);
+        if (!p) return;
+        ev.stopPropagation();
+        ev.preventDefault();
+
+        points.push(p);
+        this._marquer(p);
+
+        if (points.length === 2) {
+          this._tracer(points[0], points[1]);
+          const distance = points[0].distanceTo(points[1]);
+          fin();
+          resolve(distance > 1e-6 ? distance : null);
+        }
+      };
+
+      const echap = e => { if (e.key === 'Escape') { fin(); resolve(null); } };
+
+      const fin = () => {
+        canvas.removeEventListener('pointerdown', bas, true);
+        canvas.removeEventListener('pointerup', haut, true);
+        removeEventListener('keydown', echap);
+        this._enCalibration = false;
+      };
+
+      this._enCalibration = true;
+      this._finCalibration = () => { fin(); resolve(null); };
+      canvas.addEventListener('pointerdown', bas, true);
+      canvas.addEventListener('pointerup', haut, true);
+      addEventListener('keydown', echap);
+    });
+  }
+
+  get enCalibration() { return !!this._enCalibration; }
+
+  annulerCalibration() {
+    if (this._finCalibration) this._finCalibration();
+    this._arreterCalibration();
+  }
+
+  _arreterCalibration() {
+    if (!this._reperes) return;
+    this.viewer.scene.remove(this._reperes);
+    this._reperes.traverse(o => { o.geometry?.dispose(); o.material?.dispose(); });
+    this._reperes = null;
+  }
+
+  _marquer(p) {
+    const taille = Math.max(this.viewer.gridStep * 0.8, 0.06);
+    const repere = new THREE.Mesh(
+      new THREE.SphereGeometry(taille, 14, 10),
+      new THREE.MeshBasicMaterial({ color: 0xffb020, depthTest: false }));
+    repere.position.copy(p);
+    this._reperes.add(repere);
+  }
+
+  _tracer(a, b) {
+    const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+    this._reperes.add(new THREE.Line(g, new THREE.LineBasicMaterial({
+      color: 0xffb020, depthTest: false, transparent: true,
+    })));
+  }
+
+  /**
+   * Applique le résultat : la distance mesurée devient la distance réelle.
+   * Tout se scalant depuis l'origine du groupe, un simple rapport suffit.
+   */
+  appliquerCalibration(distanceMesuree, distanceReelle) {
+    const echelle = this.viewer.lib?.scale ?? 1;
+    const voulue = distanceReelle * echelle;          // en mètres
+    if (!(distanceMesuree > 1e-6) || !(voulue > 1e-9)) return false;
+
+    this.regler({ largeur: this.etat.largeur * (voulue / distanceMesuree) });
+    this._arreterCalibration();
+    return true;
+  }
+
   /** Ce qu'il faut retenir pour restituer le plan à la prochaine ouverture. */
   serialiser() {
     if (!this.charge) return null;
