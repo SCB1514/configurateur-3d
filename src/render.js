@@ -302,8 +302,17 @@ export class Rendu {
       if (!sun.target.parent) viewer.scene.add(sun.target);
       sun.target.updateMatrixWorld();
       sun.shadow.camera.updateProjectionMatrix();
-      sun.shadow.mapSize.set(this.reglages.qualite === 'haute' ? 2048 : 1024,
-                             this.reglages.qualite === 'haute' ? 2048 : 1024);
+      /* Une carte de 1024 avec le meme adoucissement se distingue a peine
+         d'une carte de 2048, et coute quatre fois moins en memoire comme en
+         bande passante. Changer la taille oblige a liberer l'ancienne : sans
+         cela three garde la texture precedente et la nouvelle valeur reste
+         sans effet. */
+      const cote = this.reglages.qualite === 'haute' ? 1024 : 512;
+      if (sun.shadow.mapSize.x !== cote) {
+        sun.shadow.mapSize.set(cote, cote);
+        sun.shadow.map?.dispose();
+        sun.shadow.map = null;
+      }
       viewer.marquerOmbres();
       sun.shadow.bias = -0.0006;
       sun.shadow.normalBias = 0.02;
@@ -465,6 +474,11 @@ export class Rendu {
       this._composer.setPixelRatio(ratio);
       this.viewer.resize();
     }
+    /* Tentative abandonnee : appeler majSol() ici pour que la carte d'ombre
+       suive aussitot le changement de qualite. majSol() est appele depuis la
+       boucle de rendu via _suivreEmprise ; le rappeler depuis le chemin de
+       reglage arretait la boucle net. La carte suit donc au prochain
+       recalcul d'emprise — au plus tard un quart de seconde apres. */
     this.viewer.marquerOmbres();
   }
 

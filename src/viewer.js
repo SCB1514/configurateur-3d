@@ -83,8 +83,10 @@ export class Viewer {
        recadrer sans cesse. Les valeurs ci-dessous sont celles des
        configurateurs qui paraissent vifs.  */
     this.controls = new OrbitControls(this.camera, canvas);
-    this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.14;      // repond vite, sans a-coup
+    // Pas d'inertie : la camera s'arrete ou la main s'arrete. Le glissement
+    // qui suit le relachement se lit comme de la mollesse, pas comme de la
+    // fluidite — et il faisait tourner le rendu bien apres le geste.
+    this.controls.enableDamping = false;
     this.controls.rotateSpeed = 0.85;
     this.controls.zoomSpeed = 1.15;
     this.controls.panSpeed = 0.9;
