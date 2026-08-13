@@ -239,7 +239,7 @@ export function construireLuminaire(spec, echelle = 1) {
 
   // L'apercu filaire du faisceau (cone, sphere ou nappe), masque par defaut.
   // Il suit le groupe : deplacement, rotation et echelle s'appliquent a lui.
-  const apercu = construireApercu(source);
+  const apercu = construireApercu(source, 0, { ...spec, __echelle: echelle });
   g.add(apercu);
 
   g.userData.source = source;
@@ -278,7 +278,28 @@ export function construireLuminaire(spec, echelle = 1) {
  *   — la base est la poignee. C'est elle qu'on tire pour regler d'un meme
  *     geste la portee et l'ouverture.
  */
-function construireApercu(source, hauteurSol = 0, angleDefaut = 0.96) {
+/**
+ * L'apercu d'une source, a la maniere de Rhino et de D5.
+ *
+ * Le cone est reserve au PROJECTEUR, et c'est une convention, pas un detail
+ * graphique : un cone dit « la lumiere ne sort que dans cet angle ». C'est
+ * vrai d'un projecteur, faux de tout le reste. Une dalle de plafond emet sur
+ * tout l'hemisphere devant elle ; lui dessiner un cone laisserait croire
+ * qu'elle n'eclaire pas ce qui est sur le cote, ce qui est faux et se voit
+ * au rendu.
+ *
+ * Les deux autres familles se representent donc comme dans les logiciels de
+ * metier :
+ *
+ *   — la SURFACE emettrice, a sa taille reelle : disque, rectangle ou
+ *     bandeau. C'est elle qu'on saisit pour la redimensionner ;
+ *   — une NORMALE, fleche qui dit dans quel sens la lumiere part. Sans
+ *     elle, une nappe retournee ne se distingue pas d'une nappe correcte ;
+ *   — un rayon d'ATTENUATION, cercle au sol pour les emetteurs orientes,
+ *     sphere pour la ponctuelle qui rayonne partout. C'est la poignee de
+ *     portee.
+ */
+function construireApercu(source, hauteurSol = 0, spec = {}) {
   const holder = new THREE.Group();
   holder.userData.apercu = true;
   holder.userData.poignees = [];
@@ -287,10 +308,13 @@ function construireApercu(source, hauteurSol = 0, angleDefaut = 0.96) {
     color: 0xffc53d, transparent: true, opacity: 0.5,
     depthTest: false, depthWrite: false,
   });
-  // la poignee (l'extremite saisissable) est plus vive : c'est elle qu'on tire
-  const traitPoignee = new THREE.LineBasicMaterial({
+  const traitVif = new THREE.LineBasicMaterial({
     color: 0xffd98a, transparent: true, opacity: 0.95,
     depthTest: false, depthWrite: false,
+  });
+  const voile = (opacite = 0.13) => new THREE.MeshBasicMaterial({
+    color: 0xffc53d, transparent: true, opacity: opacite,
+    side: THREE.DoubleSide, depthTest: false, depthWrite: false,
   });
 
   const marquer = (o, type) => {
@@ -300,60 +324,133 @@ function construireApercu(source, hauteurSol = 0, angleDefaut = 0.96) {
     return o;
   };
 
-  if (source.isPointLight) {
-    // sphere d'illumination : on tire sa surface pour changer la portee
-    const r = source.distance || hauteurSol || 4;
+  /** La portee effective : celle qui est fixee, sinon la hauteur au sol. */
+  const portee = source.distance || hauteurSol || 4;
+
+  /** Un cercle horizontal, a une altitude locale donnee. */
+  const cercle = (rayon, z, segments = 48) => {
+    const pts = [];
+    for (let i = 0; i <= segments; i++) {
+      const a = (i / segments) * Math.PI * 2;
+      pts.push(new THREE.Vector3(Math.cos(a) * rayon, Math.sin(a) * rayon, z));
+    }
+    return new THREE.BufferGeometry().setFromPoints(pts);
+  };
+
+  /**
+   * La fleche de direction, avec sa pointe saisissable.
+   *
+   * Sa longueur EST la portee : on la tire pour l'allonger. C'est le geste
+   * de D5, et il a l'avantage de rendre la portee visible en permanence au
+   * lieu de la cacher dans un champ.
+   */
+  const normale = (longueur) => {
+    const tige = new THREE.BufferGeometry().setFromPoints(
+      [new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -longueur)]);
+    holder.add(new THREE.Line(tige, traitVif));
+
+    const pointe = new THREE.Mesh(
+      new THREE.ConeGeometry(Math.max(0.04, longueur * 0.05), Math.max(0.1, longueur * 0.14), 16),
+      voile(0.75));
+    pointe.rotation.x = Math.PI / 2;          // la pointe regarde vers -Z
+    pointe.position.z = -longueur * 0.93;
+    marquer(pointe, 'portee');
+  };
+
+  /** Les volets coupe-flux, quatre lames inclinees autour d'une nappe. */
+  const volets = (demiL, demiH, angleDeg) => {
+    if (!(angleDeg > 0.5)) return;
+    const a = angleDeg * DEG;
+    const profondeur = Math.max(demiL, demiH) * 0.9;
+    for (const [nx, ny, l, h] of [[1, 0, demiH, 0], [-1, 0, demiH, 0],
+                                  [0, 1, demiL, 0], [0, -1, demiL, 0]]) {
+      const lame = new THREE.Mesh(new THREE.PlaneGeometry(
+        nx ? profondeur : demiL * 2, nx ? demiH * 2 : profondeur), voile(0.10));
+      const bord = nx ? demiL * nx : demiH * ny;
+      if (nx) {
+        lame.position.set(bord + Math.sin(a) * profondeur / 2, 0, -Math.cos(a) * profondeur / 2);
+        lame.rotation.y = Math.PI / 2 - a * nx;
+      } else {
+        lame.position.set(0, bord + Math.sin(a) * profondeur / 2 * ny, -Math.cos(a) * profondeur / 2);
+        lame.rotation.x = Math.PI / 2 - a * ny;
+      }
+      holder.add(lame);
+    }
+  };
+
+  const type = spec.type || (source.isPointLight ? 'point'
+                          : source.isRectAreaLight ? 'rectangle' : 'spot');
+
+  if (type === 'point') {
+    /* Ponctuelle : deux spheres, comme Rhino et D5.
+       La petite est la source physique — c'est elle qui adoucit les ombres.
+       La grande est la portee, et c'est la poignee. */
+    const rSource = Math.max(0.02, (Number(spec.rayonSource) || 60) *
+                             (spec.__echelle || 0.001));
+    const noyau = new THREE.Mesh(new THREE.SphereGeometry(rSource, 16, 12), voile(0.55));
+    holder.add(noyau);
+
     marquer(new THREE.Mesh(
-      new THREE.SphereGeometry(r, 24, 16),
+      new THREE.SphereGeometry(portee, 24, 16),
       new THREE.MeshBasicMaterial({
         color: 0xffc53d, wireframe: true, transparent: true,
-        opacity: 0.26, depthTest: false, depthWrite: false,
+        opacity: 0.22, depthTest: false, depthWrite: false,
       })), 'sphere');
-  } else {
-    /* Une nappe garde en plus le contour de sa surface emettrice : on le
-       tire pour la redimensionner, tandis que la base du cone regle la
-       portee. Deux poignees, deux intentions distinctes. */
-    if (source.isRectAreaLight) {
-      const w = source.width / 2, h = source.height / 2;
-      const coins = [
-        new THREE.Vector3(-w, -h, 0), new THREE.Vector3(w, -h, 0),
-        new THREE.Vector3(w, h, 0), new THREE.Vector3(-w, h, 0),
-      ];
-      holder.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(coins), traitPoignee));
-      marquer(new THREE.Mesh(
-        new THREE.PlaneGeometry(source.width, source.height),
-        new THREE.MeshBasicMaterial({
-          color: 0xffc53d, transparent: true, opacity: 0.12,
-          side: THREE.DoubleSide, depthTest: false, depthWrite: false,
-        })), 'rect');
-    }
 
-    /* Le cone. Sa longueur est la portee si elle a ete fixee, sinon la
-       hauteur qui separe l'appareil du sol : le faisceau s'arrete la ou il
-       eclaire vraiment. */
-    const dist = source.distance || hauteurSol || 5;
-    const ouverture = source.isRectAreaLight ? angleDefaut : (source.angle || 0.5);
-    const rayon = Math.tan(ouverture / 2) * dist;
-    const cercle = [];
-    for (let i = 0; i <= 48; i++) {
-      const a = (i / 48) * Math.PI * 2;
-      cercle.push(new THREE.Vector3(Math.cos(a) * rayon, Math.sin(a) * rayon, -dist));
-    }
-    holder.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(cercle), traitPoignee));
-    // un disque semi-transparent a la base : bien plus facile a saisir qu'une
-    // ligne, et il figure la tache de lumiere au sol
-    const disque = new THREE.Mesh(
-      new THREE.CircleGeometry(rayon, 48),
-      new THREE.MeshBasicMaterial({
-        color: 0xffc53d, transparent: true, opacity: 0.14,
-        side: THREE.DoubleSide, depthTest: false, depthWrite: false,
-      }));
+  } else if (type === 'spot') {
+    /* Projecteur : le cone, seul cas ou il dit la verite. */
+    const rayon = Math.tan((source.angle || 0.5) / 2) * portee;
+    holder.add(new THREE.LineLoop(cercle(rayon, -portee), traitVif));
+
+    const disque = new THREE.Mesh(new THREE.CircleGeometry(rayon, 48), voile());
     disque.rotation.x = Math.PI;
-    disque.position.z = -dist;
+    disque.position.z = -portee;
     marquer(disque, 'cone');
+
     const rayons = [];
-    for (let i = 0; i < 48; i += 6) rayons.push(new THREE.Vector3(0, 0, 0), cercle[i]);
-    holder.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(rayons), trait));
+    for (let i = 0; i < 48; i += 6) {
+      const a = (i / 48) * Math.PI * 2;
+      rayons.push(new THREE.Vector3(0, 0, 0),
+                  new THREE.Vector3(Math.cos(a) * rayon, Math.sin(a) * rayon, -portee));
+    }
+    holder.add(new THREE.LineSegments(
+      new THREE.BufferGeometry().setFromPoints(rayons), trait));
+
+  } else if (type === 'disque') {
+    /* Disque : sa face emettrice a sa taille reelle, une normale, et le
+       cercle d'attenuation au sol. Pas de cone — un disque encastre eclaire
+       tout ce qui est devant lui, pas seulement un cone. */
+    const r = source.__rayonDisque || Math.max(0.05, (Number(spec.rayon) || 200) *
+                                               (spec.__echelle || 0.001));
+    holder.add(new THREE.LineLoop(cercle(r, 0), traitVif));
+    marquer(new THREE.Mesh(new THREE.CircleGeometry(r, 48), voile(0.18)), 'disque');
+
+    normale(portee);
+    holder.add(new THREE.LineLoop(cercle(r + portee * 0.55, -portee), trait));
+
+  } else {
+    /* Rectangle et bandeau : le contour de la nappe, sa normale, ses volets,
+       et l'empreinte au sol. Le bandeau n'est qu'un rectangle tres allonge —
+       le distinguer ne servirait a rien. */
+    const w = source.width / 2, h = source.height / 2;
+    const coins = [
+      new THREE.Vector3(-w, -h, 0), new THREE.Vector3(w, -h, 0),
+      new THREE.Vector3(w, h, 0), new THREE.Vector3(-w, h, 0),
+    ];
+    holder.add(new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints(coins), traitVif));
+    marquer(new THREE.Mesh(
+      new THREE.PlaneGeometry(source.width, source.height), voile(0.18)), 'rect');
+
+    volets(w, h, Number(spec.volets) || 0);
+    normale(portee);
+
+    const eL = w + portee * 0.5, eH = h + portee * 0.5;
+    const sol = [
+      new THREE.Vector3(-eL, -eH, -portee), new THREE.Vector3(eL, -eH, -portee),
+      new THREE.Vector3(eL, eH, -portee), new THREE.Vector3(-eL, eH, -portee),
+    ];
+    holder.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(sol), trait));
   }
 
   // L'apercu ne capte jamais un clic normal ; la poignee ne redevient
@@ -390,6 +487,19 @@ export function appliquerReglages(g, patch, echelle = 1) {
   // 1200 cd correspond a peu pres a une intensite de 1 dans three : une
   // ampoule domestique de 800 lumens tombe alors autour de l'unite.
   const force = Number.isFinite(cd) ? cd / 1200 : 4;
+
+  if (surface && Number.isFinite(spec.rayon) && surface.geometry?.parameters?.radius) {
+    /* Redimensionner un disque sans reconstruire sa geometrie.
+
+       Reconstruire couterait une allocation a chaque image pendant qu'on
+       tire la poignee, et ferait perdre l'identite du maillage — donc la
+       selection en cours. Une mise a l'echelle du seul maillage suffit :
+       elle ne touche ni au groupe, ni a la source, ni au faisceau. */
+    surface.userData.rayonBase ??= surface.geometry.parameters.radius;
+    const voulu = spec.rayon * echelle;
+    const k = Math.max(0.01, voulu / surface.userData.rayonBase);
+    surface.scale.set(k, k, 1);
+  }
 
   if (surface) {
     surface.material.emissive.copy(couleur);
@@ -885,7 +995,24 @@ export class Luminaires {
     const rayLocal = ray.ray.clone().applyMatrix4(inv);
     const p = new THREE.Vector3();
 
-    if (type === 'sphere') {
+    /* La pointe de la normale : on la tire le long de l'axe pour allonger la
+       portee. Le point vise est projete sur l'axe -Z local, ce qui rend le
+       geste insensible au deplacement lateral de la souris. */
+    if (type === 'portee') {
+      const axe = new THREE.Ray(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1));
+      const surAxe = new THREE.Vector3();
+      rayLocal.distanceSqToSegment(axe.origin,
+        axe.origin.clone().addScaledVector(axe.direction, 1e4), null, surAxe);
+      const d = Math.max(0.1, -surAxe.z);
+      appliquerReglages(g, { portee: d / echelle }, echelle);
+
+    } else if (type === 'disque') {
+      const plan = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+      if (!rayLocal.intersectPlane(plan, p)) return;
+      const r = Math.max(0.02, Math.hypot(p.x, p.y));
+      appliquerReglages(g, { rayon: r / echelle }, echelle);
+
+    } else if (type === 'sphere') {
       const monde = new THREE.Vector3();
       g.getWorldPosition(monde);
       const regard = camera.getWorldDirection(new THREE.Vector3()).normalize();
@@ -937,9 +1064,13 @@ export class Luminaires {
     const echelleZ = Math.abs(g.getWorldScale(new THREE.Vector3()).z) || 1;
     const hauteur = Math.max(0.2, monde.z) / echelleZ;
 
-    const spec = g.userData.spec || {};
-    const ouverture = (Number(spec.angleCone) || 55) * DEG;
-    const ap = construireApercu(source, hauteur, ouverture);
+    /* La specification voyage avec l'apercu : c'est elle qui porte le type,
+       et donc la representation. Le seul objet three ne suffit pas — un
+       disque et un projecteur sont tous deux des SpotLight ici, alors qu'ils
+       ne se dessinent pas du tout de la meme facon. */
+    const spec = { ...(g.userData.spec || {}),
+                   __echelle: this.viewer.lib?.scale ?? 0.001 };
+    const ap = construireApercu(source, hauteur, spec);
     ap.visible = this._apercu === true;
     g.add(ap);
     g.userData.apercu = ap;
