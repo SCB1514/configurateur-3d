@@ -179,6 +179,13 @@ function meshAvecMatiere(name, geometry, materialId, emissive = null, emissiveIn
   return mesh
 }
 
+/* Portee nulle sur tous les appareils : le faisceau descend jusqu'au sol.
+
+   Une portee chiffree fige une hauteur d'installation. Le meme downlight
+   pose sous un plafond de 2,50 m ou de 4 m doit voir son cone s'arreter au
+   plancher dans les deux cas — c'est la tache de lumiere qui interesse, pas
+   une distance abstraite. Zero veut dire « jusqu'au sol », et la longueur
+   suit l'appareil quand on le deplace. */
 export const BLOCS_LUMIERE = [
   {
     id: "spot-rail",
@@ -202,7 +209,7 @@ export const BLOCS_LUMIERE = [
         couleur: "#fff2e2",
         intensite: 16,
         eclat: 4,
-        portee: 12000,
+        portee: 0,
         angle: 26,
         penombre: 0.25,
         nom: "Spot rail",
@@ -231,7 +238,7 @@ export const BLOCS_LUMIERE = [
         couleur: "#ffe9cc",
         intensite: 11,
         eclat: 3.5,
-        portee: 9000,
+        portee: 0,
         angle: 32,
         penombre: 0.35,
         nom: "Spot encastre",
@@ -261,7 +268,7 @@ export const BLOCS_LUMIERE = [
         couleur: "#ffffff",
         intensite: 18,
         eclat: 4.5,
-        portee: 14000,
+        portee: 0,
         angle: 22,
         penombre: 0.2,
         nom: "Spot pied",
@@ -344,7 +351,7 @@ export const BLOCS_LUMIERE = [
         couleur: "#f6f9ff",
         intensite: 13,
         eclat: 3,
-        portee: 10000,
+        portee: 0,
         angle: 62,
         penombre: 0.6,
         nom: "Disque 400",

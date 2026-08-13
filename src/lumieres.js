@@ -263,7 +263,22 @@ export function construireLuminaire(spec, echelle = 1) {
  * groupe — le même que celui de la source — pour que l'aperçu suive la
  * transformation de l'appareil sans recalcul.
  */
-function construireApercu(source) {
+/**
+ * L'apercu filaire du faisceau.
+ *
+ * Trois principes, tires de l'usage :
+ *
+ *   — TOUTE source a un faisceau. Une nappe lumineuse en est privee dans la
+ *     plupart des logiciels, ce qui oblige a deviner ou elle porte. On lui
+ *     donne le meme cone qu'a un projecteur : elle eclaire vers le bas, on
+ *     doit le voir.
+ *   — le cone descend JUSQU'AU SOL par defaut. Une portee arbitraire de cinq
+ *     metres flotte au milieu de rien ; une portee qui s'arrete au plancher
+ *     montre exactement la tache de lumiere qu'on aura.
+ *   — la base est la poignee. C'est elle qu'on tire pour regler d'un meme
+ *     geste la portee et l'ouverture.
+ */
+function construireApercu(source, hauteurSol = 0, angleDefaut = 0.96) {
   const holder = new THREE.Group();
   holder.userData.apercu = true;
   holder.userData.poignees = [];
@@ -287,33 +302,38 @@ function construireApercu(source) {
 
   if (source.isPointLight) {
     // sphere d'illumination : on tire sa surface pour changer la portee
-    const r = source.distance || 4;
+    const r = source.distance || hauteurSol || 4;
     marquer(new THREE.Mesh(
       new THREE.SphereGeometry(r, 24, 16),
       new THREE.MeshBasicMaterial({
         color: 0xffc53d, wireframe: true, transparent: true,
         opacity: 0.26, depthTest: false, depthWrite: false,
       })), 'sphere');
-  } else if (source.isRectAreaLight) {
-    // nappe emissive : un rectangle qui materialise la surface
-    const w = source.width / 2, h = source.height / 2;
-    const coins = [
-      new THREE.Vector3(-w, -h, 0), new THREE.Vector3(w, -h, 0),
-      new THREE.Vector3(w, h, 0), new THREE.Vector3(-w, h, 0),
-    ];
-    holder.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(coins), traitPoignee));
-    const nappe = new THREE.Mesh(
-      new THREE.PlaneGeometry(source.width, source.height),
-      new THREE.MeshBasicMaterial({
-        color: 0xffc53d, transparent: true, opacity: 0.14,
-        side: THREE.DoubleSide, depthTest: false, depthWrite: false,
-      }));
-    marquer(nappe, 'rect');
   } else {
-    // cone d'illumination : sommet a l'appareil, base a la portee.
-    // La base est la poignee : on la tire pour regler portee et angle.
-    const dist = source.distance || 5;
-    const rayon = Math.tan((source.angle || 0.5) / 2) * dist;
+    /* Une nappe garde en plus le contour de sa surface emettrice : on le
+       tire pour la redimensionner, tandis que la base du cone regle la
+       portee. Deux poignees, deux intentions distinctes. */
+    if (source.isRectAreaLight) {
+      const w = source.width / 2, h = source.height / 2;
+      const coins = [
+        new THREE.Vector3(-w, -h, 0), new THREE.Vector3(w, -h, 0),
+        new THREE.Vector3(w, h, 0), new THREE.Vector3(-w, h, 0),
+      ];
+      holder.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(coins), traitPoignee));
+      marquer(new THREE.Mesh(
+        new THREE.PlaneGeometry(source.width, source.height),
+        new THREE.MeshBasicMaterial({
+          color: 0xffc53d, transparent: true, opacity: 0.12,
+          side: THREE.DoubleSide, depthTest: false, depthWrite: false,
+        })), 'rect');
+    }
+
+    /* Le cone. Sa longueur est la portee si elle a ete fixee, sinon la
+       hauteur qui separe l'appareil du sol : le faisceau s'arrete la ou il
+       eclaire vraiment. */
+    const dist = source.distance || hauteurSol || 5;
+    const ouverture = source.isRectAreaLight ? angleDefaut : (source.angle || 0.5);
+    const rayon = Math.tan(ouverture / 2) * dist;
     const cercle = [];
     for (let i = 0; i <= 48; i++) {
       const a = (i / 48) * Math.PI * 2;
@@ -552,11 +572,17 @@ export class Luminaires {
                      teinte: '#ffffff', parTemperature: true, rayonSource: 60,
                      portee: 0, refletsVisibles: true, ombres: true,
                      eclat: 3.2, pos: [0, 0, 2800], rot: [0, 0, 0] };
-    if (type === 'spot') return { ...commun, nom: 'Projecteur', intensite: 4200, rayon: 55, angleCone: 30, penombre: 0.35, portee: 2800 };
-    if (type === 'point') return { ...commun, nom: 'Ponctuelle', intensite: 900, rayon: 45, portee: 0 };
-    if (type === 'disque') return { ...commun, nom: 'Disque', intensite: 2600, rayon: 200, angleCone: 60, penombre: 0.6, portee: 2800 };
-    if (type === 'bande') return { ...commun, nom: 'Bandeau', intensite: 1600, taille: [1200, 24], volets: 0, voletsLongueur: 0 };
-    return { ...commun, nom: 'Panneau', type: 'rectangle', intensite: 2800, taille: [600, 600], volets: 0, voletsLongueur: 0 };
+    /* Portee nulle : le faisceau descend jusqu'au sol.
+
+       C'est le reglage utile par defaut. Une portee chiffree — 2,80 m pour
+       un projecteur — suppose que l'appareil est au plafond ; deplace plus
+       haut ou plus bas, son cone traverse le plancher ou s'arrete en l'air.
+       Zero veut dire « jusqu'au sol », et la longueur suit l'appareil. */
+    if (type === 'spot') return { ...commun, nom: 'Projecteur', intensite: 4200, rayon: 55, angleCone: 30, penombre: 0.35 };
+    if (type === 'point') return { ...commun, nom: 'Ponctuelle', intensite: 900, rayon: 45 };
+    if (type === 'disque') return { ...commun, nom: 'Disque', intensite: 2600, rayon: 200, angleCone: 60, penombre: 0.6 };
+    if (type === 'bande') return { ...commun, nom: 'Bandeau', intensite: 1600, taille: [1200, 24], angleCone: 60, volets: 0, voletsLongueur: 0 };
+    return { ...commun, nom: 'Panneau', type: 'rectangle', intensite: 2800, taille: [600, 600], angleCone: 60, volets: 0, voletsLongueur: 0 };
   }
 
   /** Pose un appareil libre, devant la camera, a hauteur de plafond. */
@@ -600,6 +626,8 @@ export class Luminaires {
   noterTransformation(g) {
     const spec = g.userData.spec;
     if (!spec) return;
+    // le cone s'arrete au sol : monter ou descendre l'appareil le rallonge
+    if (this._apercu) queueMicrotask(() => this.rafraichirApercu(g));
     const e = this.viewer.lib?.scale ?? 1;
     spec.pos = [g.position.x / e, g.position.y / e, g.position.z / e];
     spec.rot = [g.rotation.x / DEG, g.rotation.y / DEG, g.rotation.z / DEG];
@@ -873,7 +901,9 @@ export class Luminaires {
       appliquerReglages(g, { taille: [w / echelle, h / echelle] }, echelle);
     } else {
       // cone : la base est sur le plan z = -portee, dans le repere local
-      const d = source.distance || 5;
+      g.updateMatrixWorld(true);
+      const hSol = Math.max(0.2, g.getWorldPosition(new THREE.Vector3()).z);
+      const d = source.distance || hSol;
       const plan = new THREE.Plane(new THREE.Vector3(0, 0, 1), d);
       if (!rayLocal.intersectPlane(plan, p)) return;
       const dist = Math.max(0.1, -p.z);
@@ -897,7 +927,19 @@ export class Luminaires {
     if (ancien) g.remove(ancien);
     const source = g.userData.source;
     if (!source) return;
-    const ap = construireApercu(source);
+
+    /* La hauteur qui separe l'appareil du sol, mesuree dans le monde puis
+       ramenee a l'echelle locale : un luminaire mis a l'echelle verrait
+       sinon son faisceau s'allonger avec lui, ce qui n'a aucun sens
+       physique — un spot agrandi n'eclaire pas plus loin. */
+    g.updateMatrixWorld(true);
+    const monde = g.getWorldPosition(new THREE.Vector3());
+    const echelleZ = Math.abs(g.getWorldScale(new THREE.Vector3()).z) || 1;
+    const hauteur = Math.max(0.2, monde.z) / echelleZ;
+
+    const spec = g.userData.spec || {};
+    const ouverture = (Number(spec.angleCone) || 55) * DEG;
+    const ap = construireApercu(source, hauteur, ouverture);
     ap.visible = this._apercu === true;
     g.add(ap);
     g.userData.apercu = ap;
