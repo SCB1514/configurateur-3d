@@ -116,6 +116,78 @@
     </footer>
   </aside>
 
+  <!-- ══════════ BÂTIMENT ══════════ -->
+  <aside id="batiment-panel" class="panel hidden">
+    <header class="panel-head">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <div>
+          <strong>Bâtiment</strong>
+          <small>murs, cloisons, menuiseries</small>
+        </div>
+      </div>
+      <button class="icon-btn" id="btn-batiment-close" title="Retour au catalogue">✕</button>
+    </header>
+
+    <div class="batiment-body">
+      <section class="bp-section">
+        <h4>Murs</h4>
+        <label class="bp-field"><span>Épaisseur</span><input type="number" id="murs-epaisseur" min="0.05" step="0.01" value="0.15" /><em>m</em></label>
+        <label class="bp-field"><span>Hauteur</span><input type="number" id="murs-hauteur" min="1" step="0.1" value="2.7" /><em>m</em></label>
+        <label class="bp-field"><span>Élévation</span><input type="number" id="murs-elevation" step="0.1" value="0" /><em>m</em></label>
+      </section>
+
+      <section class="bp-section">
+        <h4>Plan de coupe</h4>
+        <label class="bp-field"><span>Hauteur</span><input type="number" id="murs-coupe" min="0.1" step="0.1" value="1.2" /><em>m</em></label>
+        <p class="bp-hint">Vue orthographique de dessus : les murs coupés se remplissent de noir, les équipements restent entiers.</p>
+      </section>
+
+      <section class="bp-section">
+        <h4>Accrochages</h4>
+        <div class="bp-checks">
+          <label><input type="checkbox" data-snap="end" checked /> Extrémité</label>
+          <label><input type="checkbox" data-snap="mid" checked /> Milieu</label>
+          <label><input type="checkbox" data-snap="intersection" checked /> Intersection</label>
+          <label><input type="checkbox" data-snap="surMur" checked /> Sur le mur</label>
+          <label><input type="checkbox" data-snap="prolongation" checked /> Prolongation</label>
+          <label><input type="checkbox" data-snap="parallele" checked /> Parallèle</label>
+          <label><input type="checkbox" data-snap="perpendiculaire" checked /> Perpendiculaire</label>
+          <label><input type="checkbox" data-snap="ortho" checked /> Ortho</label>
+          <label><input type="checkbox" data-snap="grille" checked /> Grille</label>
+        </div>
+      </section>
+
+      <section class="bp-section">
+        <h4>Outils</h4>
+        <div class="bp-tools">
+          <button class="btn" id="btn-submode-dessin" data-submode="dessin">Dessiner</button>
+          <button class="btn" id="btn-submode-edition" data-submode="edition">Éditer</button>
+        </div>
+        <div class="bp-tools" id="bp-outils-dessin">
+          <button class="btn" id="btn-mode-polyligne" data-mode="polyligne">Polyligne</button>
+          <button class="btn" id="btn-mode-rectangle" data-mode="rectangle">Rectangle</button>
+          <button class="btn" id="btn-mode-cercle" data-mode="cercle">Cercle</button>
+        </div>
+        <div class="bp-tools">
+          <button class="btn" id="btn-murs-porte">Porte</button>
+          <button class="btn" id="btn-murs-fenetre">Fenêtre</button>
+        </div>
+        <p class="bp-hint" id="bp-hint-dessin">Dessin : accrochages (extrémités, milieux, croisements, prolongation, perpendiculaire, parallèle), <kbd>Maj</kbd> = ortho, <kbd>Échap</kbd> coupe.</p>
+        <p class="bp-hint hidden" id="bp-hint-edition">Édition : cliquez un mur ou un nœud pour le sélectionner, glissez un nœud pour le déplacer, <kbd>Suppr</kbd> efface.</p>
+      </section>
+    </div>
+
+    <footer class="panel-foot actions">
+      <button class="btn primary" id="btn-murs-generer">Générer 3D</button>
+      <div class="btn-row">
+        <button class="btn" id="btn-murs-plan">Plan de coupe</button>
+        <button class="btn ghost" id="btn-murs-vider">Effacer</button>
+      </div>
+      <small id="murs-stats">—</small>
+    </footer>
+  </aside>
+
   <!-- ══════════ SCÈNE ══════════ -->
   <main id="stage">
     <canvas id="canvas"></canvas>
@@ -125,6 +197,9 @@
         <button class="tb-btn" id="btn-open-catalog" title="Catalogue">☰</button>
       </div>
       <div class="tb-group" data-editor>
+        <button class="tb-btn" data-tool="select" title="Sélectionner (V)">
+          <svg viewBox="0 0 24 24"><path d="M4 3l7 17 2.5-6.5L20 11 4 3z"/></svg>
+        </button>
         <button class="tb-btn" data-tool="translate" title="Déplacer (G)">
           <svg viewBox="0 0 24 24"><path d="M12 2v20M2 12h20M12 2l-3 3M12 2l3 3M12 22l-3-3M12 22l3-3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3"/></svg>
         </button>
@@ -162,14 +237,21 @@
         <button class="tb-btn" id="btn-snap" title="Aimantation à la grille">
           <svg viewBox="0 0 24 24"><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
         </button>
+      </div>
+      <div class="tb-group">
         <button class="tb-btn" id="btn-view" title="Vue de dessus / perspective">
           <svg viewBox="0 0 24 24"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
         </button>
         <button class="tb-btn" id="btn-fit" title="Recadrer (F)">
           <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
         </button>
+      </div>
+      <div class="tb-group tb-panneaux">
         <button class="tb-btn" id="btn-lumieres" title="Gestion des lumières">
           <svg viewBox="0 0 24 24"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2Z"/></svg>
+        </button>
+        <button class="tb-btn" id="btn-murs" title="Tracer des murs (bâtiment)">
+          <svg viewBox="0 0 24 24"><path d="M4 20V4h6v16M10 20V8h4v12M14 20V4h6v16"/></svg>
         </button>
         <button class="tb-btn" id="btn-render" title="Rendu et caméra">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v9l6.4 6.4M12 12l8.9-1.6M12 12l-7.4 5.2"/></svg>
@@ -193,7 +275,14 @@
       <button data-view="top">HAUT</button>
       <button data-view="front">FACE</button>
       <button data-view="right">DROITE</button>
+      <button data-view="plan" title="Plan de coupe (vue orthographique de dessus)">PLAN</button>
       <button data-view="oeil" title="Hauteur d'œil, depuis l'entrée">ŒIL</button>
+    </div>
+
+    <!-- ══════════ STATUT DU TRACÉ ══════════ -->
+    <div id="draft-status" class="draft-status hidden">
+      <span id="draft-info">—</span>
+      <label class="draft-input">Longueur <input type="number" id="draft-length" min="0.01" step="0.01" placeholder="m" title="Saisir une longueur puis Entrée" /></label>
     </div>
 
     <!-- ══════════ LUMIÈRES ══════════ -->
@@ -292,6 +381,26 @@
         </div>
       </div>
       <div class="sel-meta" id="sel-meta"></div>
+    </section>
+
+    <section id="wall-box" class="section hidden">
+      <h4>Mur sélectionné</h4>
+      <div class="field-row">
+        <label>Épaisseur (m)</label>
+        <input type="number" id="wall-thickness" step="0.01" min="0.05" />
+      </div>
+      <div class="field-row">
+        <label>Hauteur (m)</label>
+        <input type="number" id="wall-height" step="0.1" min="1" />
+      </div>
+      <div class="field-row">
+        <label>Élévation (m)</label>
+        <input type="number" id="wall-elevation" step="0.1" />
+      </div>
+      <div class="btn-row">
+        <button class="btn" id="btn-wall-dup" title="Dupliquer ce mur">Dupliquer</button>
+        <button class="btn ghost" id="btn-wall-del" title="Supprimer ce mur">Supprimer</button>
+      </div>
     </section>
 
     <section class="section" id="materials-box">

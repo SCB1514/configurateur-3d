@@ -6,6 +6,7 @@ import { creerPanneauLumieres, CSS_PANNEAU_LUMIERES } from './panneau-lumieres.j
 import { ThumbnailFactory } from './thumbnails.js';
 import { encodeState, decodeState, readHash, buildUrl } from './share.js';
 import { Plan } from './plan.js';
+import { Batiment } from './batiment.js';
 import { download, downloadDataUrl, compositionJSON, exportOBJ, quoteText, fmt } from './exporters.js';
 
 /* ============================================================
@@ -67,10 +68,22 @@ async function boot() {
     },
     onDimension: (axis, valeur, cx, cy) => editDimension(axis, valeur, cx, cy),
     onGizmoValue: (tool, axe, cx, cy) => editGizmoValue(tool, axe, cx, cy),
+    onWallMove: (wallId, dx, dy) => {
+      const g = app.batiment.graph;
+      const w = g.walls.get(wallId);
+      if (!w) return;
+      for (const nid of [w.a, w.b]) {
+        const n = g.nodes.get(nid);
+        if (n) { n.x += dx; n.y += dy; }
+      }
+      app.batiment.generer3D();
+      app.viewer.select(wallId);      // re-sélection sur le nouveau maillage
+    },
   });
   app.viewer.setEditable(!app.viewonly);
   app.thumbs = new ThumbnailFactory(256);
   app.plan = new Plan(app.viewer);
+  app.batiment = new Batiment(app.viewer);
   wireUI();
 
   // la configuration partagée peut désigner la bibliothèque à ouvrir
@@ -98,67 +111,7 @@ async function boot() {
   }
   // apercu des faisceaux force par l'URL (?apercu=1) — utile aux captures
   if (params.get('apercu') === '1') app.viewer.luminaires.setApercu(true);
-  // diagnostic temporaire : double-clic sur une cote
-  if (params.get('test') === 'dbl') testDoubleClic();
   $('#loader').classList.add('hidden');
-}
-
-/** Diagnostic temporaire : simule un double-clic sur une cote avec de vrais
- *  événements pointeur, et vérifie si le champ d'édition apparaît. */
-async function testDoubleClic() {
-  try {
-    const uids = [...(app.viewer.objects?.keys() || [])];
-    if (!uids.length) { document.title = 'DBL:aucun-objet'; return; }
-  app.showDims = true;
-  const v = app.viewer;
-  let cible = null;
-  for (const uid of uids) {
-    onSelect(uid);
-    await new Promise(r => setTimeout(r, 150));
-    const cotes = v.dimGroup?.userData?.cotes;
-    if (!cotes?.length) continue;
-    const r = v.canvas.getBoundingClientRect();
-    v.camera.updateMatrixWorld();
-    for (const c of cotes) {
-      const p = c.pos.clone().project(v.camera);
-      const cx = r.left + (p.x + 1) / 2 * r.width;
-      const cy = r.top + (1 - p.y) / 2 * r.height;
-      if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) {
-        cible = { uid, cote: c, cx, cy };
-        break;
-      }
-    }
-    if (cible) break;
-  }
-  if (!cible) { document.title = 'DBL:aucune-cote-visible'; return; }
-  window.__dimCalls = 0;
-  window.__coteHits = [];
-  window.__deltas = [];
-  const origCote = app.viewer.coteSous.bind(app.viewer);
-  app.viewer.coteSous = (ev) => { const r = origCote(ev); window.__coteHits.push(r); return r; };
-  const origHook = app.viewer.hooks.onDimension;
-  app.viewer.hooks.onDimension = (...a) => { window.__dimCalls++; return origHook(...a); };
-  const origUp = app.viewer._onUp.bind(app.viewer);
-  app.viewer._onUp = (ev) => {
-    const t = performance.now();
-    window.__deltas.push(Math.round(t - app.viewer._clic.t));
-    return origUp(ev);
-  };
-  const entre = (id) => {
-    v.canvas.dispatchEvent(new PointerEvent('pointerdown', {
-      clientX: cible.cx, clientY: cible.cy, button: 0, pointerId: id, bubbles: true, cancelable: true }));
-    v.canvas.dispatchEvent(new PointerEvent('pointerup', {
-      clientX: cible.cx, clientY: cible.cy, button: 0, pointerId: id, bubbles: true, cancelable: true }));
-  };
-  entre(1);
-  await new Promise(r => setTimeout(r, 60));
-  entre(2);
-  await new Promise(r => setTimeout(r, 400));
-  const inputs = document.querySelectorAll('body > input').length;
-  document.title = `DBL:cote=${cible.cote.axis}:dimCalls=${window.__dimCalls}:coteHits=${window.__coteHits.map(c => c ? c.axis : '-').join(',')}:deltas=${window.__deltas.join(',')}:inputs=${inputs}:sel=${app.selection.length}`;
-  } catch (e) {
-    document.title = 'DBL:ERREUR=' + String(e && e.message);
-  }
 }
 
 function fatal(e) {
@@ -634,6 +587,13 @@ function placeItem(partial) {
 const find = uid => app.state.items.find(i => i.uid === uid);
 
 function deleteSelected() {
+  // mur du bâtiment sélectionné : suppression topologique
+  if (app.selectedWall) {
+    app.batiment.supprimerMur(app.selectedWall);
+    app.viewer.select(null);
+    toast('Mur supprimé');
+    return;
+  }
   const uids = app.selection?.length ? app.selection : (app.selected ? [app.selected] : []);
   if (!uids.length) return;
   if (app.compat && uids.includes(app.compat.uid)) clearCompatible();
@@ -677,8 +637,12 @@ function clearAll() {
 }
 
 /* ══════════════════ historique ══════════════════ */
+function snapState() {
+  return JSON.stringify({ items: app.state.items, batiment: app.batiment.serialiser() });
+}
+
 function pushHistory(initial = false) {
-  const snap = JSON.stringify(app.state.items);
+  const snap = snapState();
   if (app.history.length && app.history[app.history.length - 1] === snap) return;
   app.history.push(snap);
   if (app.history.length > 80) app.history.shift();
@@ -701,9 +665,16 @@ function redo() {
 }
 
 function applySnapshot(snap) {
-  app.state.items = JSON.parse(snap);
+  const { items, batiment } = JSON.parse(snap);
+  app.state.items = items || [];
   app.viewer.syncAll(app.state.items);
+  app.batiment.restaurer(batiment);
+  // désélectionne ce qui n'existe plus (machine ou mur)
   if (app.selected && !find(app.selected)) app.viewer.select(null);
+  if (app.selectedWall && !app.batiment.graph.walls.has(app.selectedWall)) {
+    app.selectedWall = null;
+    $('#wall-box').classList.add('hidden');
+  }
   updateHistoryButtons();
   refreshAll();
   scheduleSave();
@@ -1144,6 +1115,156 @@ function chargerRendu() {
    Le plan de la salle, posé au sol : on implante les machines dessus.
    Image ou DXF — le DXF est un format texte, lu sans dépendance extérieure.
    ================================================== */
+/* ══════════════════ murs / bâtiment ══════════════════ */
+function wireBatiment() {
+  const majStats = () => {
+    const s = app.batiment.stats();
+    $('#murs-stats').textContent =
+      `${s.murs} mur(s) · ${s.noeuds} nœud(s) · ${s.pieces} pièce(s) · ${s.ouvertures} ouverture(s)`;
+  };
+  app.batiment._onChange = () => {
+    majStats();
+    pushHistory();
+  };
+
+  const ouvrir = () => {
+    $('#btn-murs').classList.add('on');
+    $('#catalog').classList.add('hidden');
+    $('#batiment-panel').classList.remove('hidden');
+    $('#btn-murs-plan').classList.add('on');   // le tracé se fait en plan de coupe
+    app.batiment.tracerMurs();
+  };
+  const fermer = () => {
+    app.batiment.arreter();
+    $('#btn-murs').classList.remove('on');
+    $('#batiment-panel').classList.add('hidden');
+    $('#catalog').classList.remove('hidden');
+    // on reste en vue de plan après la génération
+    $('#btn-murs-plan').classList.toggle('on', app.batiment.modePlan);
+  };
+
+  $('#btn-murs').onclick = () => {
+    if (app.batiment.actif) fermer();
+    else ouvrir();
+  };
+  $('#btn-batiment-close').onclick = fermer;
+
+  $('#murs-epaisseur').onchange = e =>
+    app.batiment.setParametres({ epaisseur: Math.max(0.05, Number(e.target.value)) });
+  $('#murs-hauteur').onchange = e =>
+    app.batiment.setParametres({ hauteur: Math.max(1, Number(e.target.value)) });
+  $('#murs-elevation').onchange = e =>
+    app.batiment.setParametres({ elevation: Number(e.target.value) || 0 });
+  $('#murs-coupe').onchange = e => {
+    app.batiment.hauteurCoupe = Math.max(0.1, Number(e.target.value) || 1.2);
+    if (!app.batiment.vide) app.batiment.generer3D();   // reconstruit aussi le poché
+    // le rendu ne se refait qu'a la demande : sans cela le poche ne changeait
+    // qu'au prochain mouvement de camera
+    app.viewer.marquerOmbres();
+    app.viewer.demanderImage(3);
+  };
+  /* Une seule commande, deux endroits.
+
+     Le plan de coupe se declenche depuis le panneau Batiment ET depuis le
+     cube d'orientation. Deux boutons pour une meme bascule, c'est acceptable
+     — ils ne servent pas au meme moment — mais ils doivent dire la meme
+     chose : sortir du plan par le cube laissait le bouton du panneau allume,
+     et l'on ne savait plus dans quel mode on se trouvait. */
+  app.basculerPlanCoupe = (force) => {
+    if (app.batiment.etatNom === 'mur') return;   // le tracé gère lui-même le plan
+    const on = force === undefined ? !app.batiment.modePlan : !!force;
+    app.batiment.setModePlan(on);
+    $('#btn-murs-plan').classList.toggle('on', on);
+    $$('#viewcube button').forEach(b2 => b2.classList.toggle('on', on && b2.dataset.view === 'plan'));
+    app.viewer.demanderImage(3);
+    return on;
+  };
+
+  $('#btn-murs-plan').onclick = () => {
+    const on = app.basculerPlanCoupe();
+    if (on !== undefined) toast(on ? 'Plan de coupe activé' : 'Vue 3D rétablie');
+  };
+
+  $('#btn-murs-generer').onclick = () => {
+    if (app.batiment.vide) { toast('Tracez d’abord des murs', true); return; }
+    if (app.batiment.etatNom === 'repos') app.batiment.generer3D();
+    else app.batiment.arreter();       // sort du tracé → génère le 3D et l'affiche
+    majStats();
+    toast(app.batiment.graph.detectRooms().length
+      ? 'Bâtiment généré (murs + dalles + plafonds)'
+      : 'Murs générés — aucune pièce fermée');
+  };
+  $('#btn-murs-porte').onclick = () => app.batiment.insererPorte();
+  $('#btn-murs-fenetre').onclick = () => app.batiment.insererFenetre();
+  $('#btn-murs-vider').onclick = () => {
+    app.batiment.vider();
+    majStats();
+    toast('Bâtiment effacé');
+  };
+
+  // — sous-modes du tracé : dessiner / éditer
+  const basculerSousMode = (edition) => {
+    if (app.batiment.etatNom !== 'mur') app.batiment.tracerMurs();
+    app.batiment.setModeEdition(edition);
+    $$('[data-submode]').forEach(b => b.classList.toggle('on', (b.dataset.submode === 'edition') === edition));
+    $('#bp-outils-dessin').classList.toggle('hidden', edition);
+    $('#bp-hint-dessin').classList.toggle('hidden', edition);
+    $('#bp-hint-edition').classList.toggle('hidden', !edition);
+  };
+  $$('[data-submode]').forEach(btn => {
+    btn.onclick = () => basculerSousMode(btn.dataset.submode === 'edition');
+  });
+  basculerSousMode(false);
+
+  // — modes de dessin (polyligne / rectangle / cercle)
+  $$('[data-mode]').forEach(btn => {
+    btn.onclick = () => {
+      app.batiment._modeDessin = btn.dataset.mode;
+      $$('[data-mode]').forEach(b => b.classList.toggle('on', b === btn));
+    };
+  });
+  $('#btn-mode-polyligne').classList.add('on');
+
+  // — accrochages (cases à cocher)
+  $$('[data-snap]').forEach(cb => {
+    cb.onchange = () => { app.batiment.snaps[cb.dataset.snap] = cb.checked; };
+  });
+
+  // — barre de statut du tracé (longueur/angle + saisie de valeur)
+  const etiquettes = {
+    end: 'extrémité', mid: 'milieu', intersection: 'croisement',
+    surMur: 'sur le mur', prolongation: 'prolongation',
+    parallele: 'parallèle', perpendiculaire: 'perpendiculaire', ortho: 'ortho',
+    grille: 'grille', libre: 'libre',
+  };
+  app.batiment._onStatut = (info) => {
+    const barre = $('#draft-status');
+    if (!info) { barre.classList.add('hidden'); return; }
+    barre.classList.remove('hidden');
+    if (info.type === 'rectangle') $('#draft-info').textContent = `${info.largeur.toFixed(2)} × ${info.hauteur.toFixed(2)} m`;
+    else if (info.type === 'cercle') $('#draft-info').textContent = `rayon ${info.rayon.toFixed(2)} m`;
+    else $('#draft-info').textContent = `${info.long.toFixed(2)} m · ${info.angle.toFixed(0)}°${info.type && etiquettes[info.type] ? ' · ' + etiquettes[info.type] : ''}`;
+  };
+  // — saisie dynamique de la longueur (point → longueur → direction → clic)
+  app.batiment._focusSaisie = () => {
+    const barre = $('#draft-status');
+    barre.classList.remove('hidden');      // le champ doit être visible pour recevoir le focus
+    const i = $('#draft-length');
+    i.focus();
+    i.select();
+  };
+  app.batiment._viderSaisie = () => {
+    app.batiment._longueurContrainte = null;
+    const i = $('#draft-length');
+    i.value = '';
+    i.blur();
+  };
+  $('#draft-length').oninput = e => {
+    const v = Number(e.target.value);
+    app.batiment._longueurContrainte = v > 0 ? v : null;
+  };
+}
+
 function wirePlan() {
   $('#btn-plan-open').onclick = () => $('#plan-file').click();
   $('#plan-file').onchange = e => {
@@ -1393,6 +1514,17 @@ function sameColor(a, b) {
 function onSelect(uid, selection) {
   app.selected = uid;
   app.selection = selection || (uid ? [uid] : []);
+  // mur du bâtiment sélectionné : panneau dédié, pas le panneau d'élément
+  const estMur = uid && app.batiment.graph.walls.has(uid);
+  app.selectedWall = estMur ? uid : null;
+  app.batiment.setMurSelectionne(app.selectedWall);   // poignées de nœuds
+  $('#wall-box').classList.toggle('hidden', !estMur);
+  if (estMur) {
+    const w = app.batiment.graph.walls.get(uid);
+    $('#wall-thickness').value = w.thickness;
+    $('#wall-height').value = w.height;
+    $('#wall-elevation').value = w.elevation || 0;
+  }
   refreshSelectionPanel();
   refreshDimensions();
 }
@@ -1516,7 +1648,8 @@ function refreshSelectionPanel() {
   const box = $('#selection-box');
   const it = find(app.selected);
   markAppliedMaterial();
-  if (!it) { box.classList.add('hidden'); return; }
+  if (!it) { box.classList.add('hidden'); if (!app.selectedWall) $('#wall-box').classList.add('hidden'); return; }
+  $('#wall-box').classList.add('hidden');
 
   // À plusieurs, on annonce l'ensemble et son encombrement global.
   const multiple = (app.selection || []).length > 1;
@@ -1599,7 +1732,7 @@ function wireUI() {
       app.viewer.setTool(btn.dataset.tool);
     };
   });
-  $('[data-tool="translate"]').classList.add('on');
+  $('[data-tool="select"]').classList.add('on');
 
   $('#lib-switch').onchange = async e => {
     const key = e.target.value;
@@ -1667,9 +1800,42 @@ function wireUI() {
     pushHistory(); refreshSelectionPanel();
   };
 
+  // — panneau « mur sélectionné »
+  /* Modifier un mur : reconstruire, redessiner, et retenir le geste.
+
+     setParametresMur ne touche qu'au graphe topologique. Sans la
+     reconstruction qui suit, on saisissait une epaisseur et rien ne bougeait
+     a l'ecran — le mur gardait son ancienne forme jusqu'a ce qu'un autre
+     evenement force une regeneration. Le reglage paraissait sans effet. */
+  const majMur = (patch) => {
+    if (!app.selectedWall) return;
+    app.batiment.setParametresMur(app.selectedWall, patch);
+    if (!app.batiment.vide) app.batiment.generer3D();
+    app.viewer.marquerOmbres();
+    app.viewer.demanderImage(3);
+    pushHistory();
+  };
+
+  $('#wall-thickness').onchange = e => majMur({ thickness: Math.max(0.05, Number(e.target.value)) });
+  $('#wall-height').onchange = e => majMur({ height: Math.max(1, Number(e.target.value)) });
+  $('#wall-elevation').onchange = e => majMur({ elevation: Number(e.target.value) || 0 });
+  $('#btn-wall-del').onclick = () => deleteSelected();
+  $('#btn-wall-dup').onclick = () => {
+    if (!app.selectedWall) return;
+    const w = app.batiment.graph.walls.get(app.selectedWall);
+    if (!w) return;
+    const g = app.batiment.graph;
+    const a = g.addNode(g.node(w.a).x + 0.6, g.node(w.a).y + 0.6);
+    const b = g.addNode(g.node(w.b).x + 0.6, g.node(w.b).y + 0.6);
+    g.addWall(a, b, { thickness: w.thickness, height: w.height, elevation: w.elevation });
+    app.batiment.generer3D();
+    toast('Mur dupliqué');
+  };
+
   wirePlan();
   wireRendu();
   wireLumieres();
+  wireBatiment();
 
   $('#preset-select').onchange = describePreset;
   $('#btn-preset-load').onclick = () => {
@@ -1743,7 +1909,18 @@ function wireUI() {
     e.currentTarget.classList.toggle('on', on);
     toast(on ? 'Aimantation activée' : 'Aimantation désactivée');
   };
-  $$('#viewcube button').forEach(b => b.onclick = () => app.viewer.setView(b.dataset.view));
+  $$('#viewcube button').forEach(b => b.onclick = () => {
+    // le cube et le panneau Batiment commandent la meme bascule : elle est
+    // centralisee pour que les deux affichent toujours le meme etat
+    if (b.dataset.view === 'plan') return void app.basculerPlanCoupe();
+
+    if (app.viewer.modePlan) app.viewer.quitterPlanVers(b.dataset.view);
+    else app.viewer.setView(b.dataset.view, false);
+    // quitter le plan par le cube doit eteindre le bouton du panneau
+    if (app.batiment?.modePlan) app.basculerPlanCoupe(false);
+    $$('#viewcube button').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+  });
 
   $('#sel-rot').onchange = e => {
     const it = find(app.selected); if (!it) return;
@@ -1822,6 +1999,7 @@ function wireUI() {
     }
     if (e.key === 'Escape') { stopPlacing(); clearCompatible(); app.viewer.select(null); }
     else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); }
+    else if (k === 'v') $('[data-tool="select"]').click();
     else if (k === 'd') duplicateSelected();
     else if (k === 'f') app.viewer.fit();
     else if (k === 'g') $('[data-tool="translate"]').click();

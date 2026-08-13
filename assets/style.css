@@ -32,6 +32,12 @@ svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke
 
 #app{display:grid;grid-template-columns:var(--panel-w) 1fr var(--insp-w);height:100dvh}
 
+/* Le panneau « bâtiment » remplace le catalogue dans la même colonne. */
+#catalog{grid-column:1}
+#batiment-panel{grid-column:1}
+#stage{grid-column:2}
+#inspector{grid-column:3}
+
 /* ---------- panneaux ---------- */
 .panel{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;z-index:5}
 #inspector{border-right:none;border-left:1px solid var(--line)}
@@ -65,6 +71,24 @@ pre.csp{
   font-size:11px;line-height:1.6;color:var(--txt-dim);overflow-x:auto;white-space:pre-wrap;margin:0;
 }
 .panel-foot.actions{display:flex;flex-direction:column;gap:8px}
+
+/* ---------- panneau bâtiment ---------- */
+.batiment-body{flex:1 1 auto;overflow-y:auto;min-height:0}
+.bp-section{padding:12px 14px;border-bottom:1px solid var(--line)}
+.bp-section h4{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--txt-dim);margin:0 0 9px}
+.bp-field{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--txt-dim);margin-bottom:7px}
+.bp-field span{flex:0 0 88px}
+.bp-field input{flex:1 1 auto;min-width:0;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;color:var(--txt);padding:7px 9px;font-size:12.5px}
+.bp-field input:focus{border-color:var(--accent);outline:none}
+.bp-field em{font-style:normal;font-size:11px;color:var(--txt)}
+.bp-tools{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px}
+.bp-tools .btn:first-child{grid-column:1/-1}
+.bp-checks{display:grid;grid-template-columns:1fr 1fr;gap:5px 10px}
+.bp-checks label{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--txt);cursor:pointer}
+.bp-checks input{accent-color:var(--accent);margin:0}
+.bp-hint{font-size:11px;color:var(--txt-dim);line-height:1.55;margin:0}
+.bp-hint kbd{background:var(--panel-2);border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:10px}
+#batiment-panel .panel-foot small{text-align:center}
 
 /* ---------- recherche & catégories ---------- */
 .search-row{padding:12px 14px 8px}
@@ -180,6 +204,19 @@ pre.csp{
   letter-spacing:.4px;padding:6px 9px;border-radius:6px;cursor:pointer;
 }
 #viewcube button:hover{background:var(--panel-2);color:var(--txt)}
+
+/* barre de statut du tracé : longueur/angle + saisie de valeur, en bas au centre */
+.draft-status{
+  position:absolute;bottom:16px;left:50%;transform:translateX(-50%);z-index:3;
+  display:flex;align-items:center;gap:14px;
+  background:rgba(21,26,33,.94);border:1px solid var(--line);border-radius:999px;
+  padding:8px 16px;font-size:12.5px;color:var(--txt);box-shadow:var(--shadow);
+  font-variant-numeric:tabular-nums;
+}
+.draft-status .draft-input{display:flex;align-items:center;gap:6px;color:var(--txt-dim);font-size:11.5px}
+.draft-status input{width:74px;padding:5px 8px;background:var(--panel-2);border:1px solid var(--line);
+  border-radius:6px;color:var(--txt);font-size:12px;font-variant-numeric:tabular-nums}
+.draft-status input:focus{border-color:var(--accent);outline:none}
 
 .hint{
   position:absolute;bottom:16px;left:50%;transform:translateX(-50%);z-index:3;
@@ -328,14 +365,16 @@ kbd{background:var(--panel-2);border:1px solid var(--line);border-radius:4px;pad
 @media (max-width:1080px){ :root{--panel-w:250px;--insp-w:280px} }
 @media (max-width:880px){
   #app{grid-template-columns:1fr}
+  #catalog,#batiment-panel,#stage,#inspector{grid-column:auto}
   .only-mobile{display:inline-flex;align-items:center;justify-content:center}
-  #catalog,#inspector{
+  #catalog,#batiment-panel,#inspector{
     position:fixed;top:0;bottom:0;width:min(320px,86vw);z-index:12;box-shadow:var(--shadow);
     transition:transform .22s ease;
   }
   #catalog{left:0;transform:translateX(-101%)}
+  #batiment-panel{left:0;transform:translateX(-101%)}
   #inspector{right:0;transform:translateX(101%)}
-  #catalog.open,#inspector.open{transform:none}
+  #catalog.open,#batiment-panel.open,#inspector.open{transform:none}
   #topbar{top:8px;left:8px;right:8px}
   #viewcube{bottom:78px}
 }
@@ -399,4 +438,21 @@ body.viewonly .panel-foot.actions .btn-row,body.viewonly #btn-clear{display:none
 }
 @media (max-width:900px){
   .light-panel{left:8px;right:8px;top:56px;width:auto}
+}
+
+
+/* ---------- barre d'outils : distinguer agir et ouvrir ----------
+   Neuf boutons d'affilee dans un meme groupe, c'etait une rangee d'icones
+   sans grammaire : rien ne disait que « cotes » bascule un affichage tandis
+   que « lumieres » ouvre un panneau lateral. Les trois boutons qui ouvrent
+   un panneau sont donc mis a part et marques d'un liseré : leur etat actif
+   veut dire « un panneau est ouvert », pas « un mode est arme ». */
+.tb-panneaux{position:relative}
+.tb-panneaux::before{
+  content:"";position:absolute;left:-5px;top:6px;bottom:6px;width:1px;
+  background:var(--line);
+}
+.tb-panneaux .tb-btn.on{
+  background:var(--panel-2);color:var(--accent);
+  box-shadow:inset 0 -2px 0 var(--accent);
 }

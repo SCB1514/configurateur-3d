@@ -13,6 +13,12 @@ import { buildStandardMaterial, materialKey } from './library.js';
 const DEG = Math.PI / 180;
 const UP = new THREE.Vector3(0, 0, 1);
 const UNIVERSAL = '*';
+const VUES = {
+  iso: new THREE.Vector3(0.62, -0.72, 0.55),
+  top: new THREE.Vector3(0, -0.0001, 1),
+  front: new THREE.Vector3(0, -1, 0.02),
+  right: new THREE.Vector3(1, 0, 0.02),
+};
 
 export class Viewer {
   constructor(canvas, hooks = {}) {
@@ -20,6 +26,9 @@ export class Viewer {
     this.hooks = hooks;              // {onPlace, onSelect, onTransform, onCommit}
     this.lib = null;
     this.objects = new Map();        // uid -> THREE.Group
+    this.selectables = [];           // objets cliquables hors items (murs du bâtiment)
+    this._wallEdit = null;           // id du mur tenu au gizmo (null sinon)
+    this._wallDepart = null;
     this.gridStep = 0.1;
     this.snap = true;
     this.ghost = null;
@@ -79,6 +88,17 @@ export class Viewer {
     this.camera = new THREE.PerspectiveCamera(38, 1, 0.05, 400);
     this.camera.up.set(0, 0, 1);
     this.camera.position.set(4.5, -6.5, 4.2);
+
+    // Caméra orthographique du plan de coupe : une vraie projection en plan,
+    // sans perspective. Elle remplace la caméra perspective en mode plan.
+    // `up` doit être PERPENDICULAIRE à la direction de vue (sinon orientation
+    // dégénérée → gauche/droite inversés) : on pointe +Y vers le haut de l'écran.
+    this.cameraPlan = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 600);
+    this.cameraPlan.up.set(0, 1, 0);
+    this.cameraPlan.position.set(0, 0, 100);
+    this.modePlan = false;
+    this._camera3D = null;
+    this.planBox = null;       // emprise du plan de coupe (posée par le bâtiment)
 
     /* Le toucher de la navigation.
 
@@ -156,8 +176,21 @@ export class Viewer {
     this.gizmo.setSize(0.85);
     this.gizmo.addEventListener('dragging-changed', e => {
       this.controls.enabled = !e.value;
-      if (e.value) this._captureDepart();
-      else { this._depart = null; this.clearSnapHints(); this.hooks.onCommit?.(); }
+      if (e.value) {
+        this._captureDepart();
+        if (this._wallEdit) this._wallDepart = this.gizmo.object.position.clone();
+      } else {
+        this._depart = null;
+        this.clearSnapHints();
+        if (this._wallEdit) {
+          // mur déplacé au gizmo : on reporte l'écart sur le graphe topologique
+          const delta = this.gizmo.object.position.clone().sub(this._wallDepart || new THREE.Vector3());
+          this.hooks.onWallMove?.(this._wallEdit, delta.x, delta.y);
+          this._wallEdit = null;
+        } else {
+          this.hooks.onCommit?.();
+        }
+      }
     });
     this.gizmo.addEventListener('objectChange', () => this._readTransform());
     this.gizmo.visible = false;
@@ -187,7 +220,7 @@ export class Viewer {
 
     this.scene.add(this.gizmo);
     this.editable = true;
-    this.setTool('translate');
+    this.setTool('select');   // sélection par défaut (flèche)
     this.setSnap(true);
 
     /* ---------- repères de connexion ---------- */
@@ -257,12 +290,86 @@ export class Viewer {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    if (this.modePlan) this._majFrustumPlan();
     this.rendu?.redimensionner(w, h);
     // Redimensionner reconstruit les cibles de rendu ; la carte d'ombre, elle,
     // n'est plus refaite d'office. On la redemande explicitement, sinon la
     // premiere image apres un changement de taille peut sortir sans ombres.
     this.marquerOmbres();
     this.demanderImage(3);
+  }
+
+  /* ══════════ plan de coupe ══════════ */
+
+  /** Bascule la caméra en vue orthographique de dessus (plan), ou la restaure. */
+  setModePlan(on) {
+    if (this.modePlan === on) return;
+    this.modePlan = on;
+    if (on) {
+      this._camera3D = this.camera;               // on garde la perspective
+      this._dir3D = this.camera.position.clone().sub(this.controls.target).normalize();
+      this.camera = this.cameraPlan;
+      this.controls.object = this.cameraPlan;
+      this.controls.enableRotate = false;
+      this.controls.screenSpacePanning = true;
+      this._cadrerPlan();
+      this.resize();
+    } else {
+      this._quitterPlan(null);
+      this.resize();
+    }
+    this.demanderImage(3);
+  }
+
+  /** Restaure la perspective en gardant le FOCUS du plan et ~la même étendue
+   *  (pas de dézoom) : la transition est instantanée. */
+  _quitterPlan(dirOpt) {
+    const cible = this.controls.target.clone();
+    if (this._camera3D) { this.camera = this._camera3D; this._camera3D = null; }
+    this.controls.object = this.camera;
+    this.controls.enableRotate = true;
+    const dir = (dirOpt || this._dir3D || VUES.iso).clone().normalize();
+    const dist = (this._planEtendue || 20) / (2 * Math.tan(this.camera.fov * DEG * 0.5));
+    this._cadrer(cible, cible.clone().addScaledVector(dir, dist), false);
+  }
+
+  /** Quitte le plan vers une vue nommée, en conservant focus et étendue. */
+  quitterPlanVers(kind) {
+    if (!this.modePlan) { this.setView(kind, false); return; }
+    this.modePlan = false;
+    this._quitterPlan(VUES[kind]);
+    this.resize();
+    this.demanderImage(3);
+  }
+
+  /** Emprise à cadrer en plan (posée par le bâtiment, sinon la scène). */
+  setPlanBox(box) { this.planBox = box; }
+
+  /** Cadre la vue de dessus sur l'emprise de la scène. */
+  _cadrerPlan() {
+    const b = this.planBox || this.bounds() || new THREE.Box3(new THREE.Vector3(-5, -5, 0), new THREE.Vector3(5, 5, 3));
+    const c = b.getCenter(new THREE.Vector3());
+    const taille = b.getSize(new THREE.Vector3());
+    this._planEtendue = Math.max(taille.x, taille.y, 4) * 1.35;
+    this.cameraPlan.position.set(c.x, c.y, c.z + 200);
+    this.cameraPlan.lookAt(c.x, c.y, 0);
+    this.cameraPlan.zoom = 1;
+    this.controls.target.set(c.x, c.y, 0);
+    this.controls.minDistance = 0;
+    this.controls.maxDistance = 400;
+    this.controls.update();
+  }
+
+  _majFrustumPlan() {
+    const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
+    if (!w || !h) return;
+    const aspect = w / h;
+    const demi = (this._planEtendue || 20) / 2;
+    this.cameraPlan.left = -demi * aspect;
+    this.cameraPlan.right = demi * aspect;
+    this.cameraPlan.top = demi;
+    this.cameraPlan.bottom = -demi;
+    this.cameraPlan.updateProjectionMatrix();
   }
 
   /* ══════════ rendu a la demande ══════════
@@ -317,6 +424,14 @@ export class Viewer {
     if (!this._doitDessiner()) return;
     this._tDessin = performance.now();
     this._mesurerRythme();
+    // Le plan de coupe se dessine en direct, sans post-traitement : un plan
+    // n'a que faire du halo ni de l'occlusion ambiante, et la caméra ortho
+    // n'est pas celle qu'attend le compositeur.
+    if (this.modePlan) {
+      this.renderer.setRenderTarget(null);
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
     if (!this.rendu?.rendre()) this.renderer.render(this.scene, this.camera);
   };
 
@@ -552,7 +667,7 @@ export class Viewer {
 
   _readTransform() {
     const obj = this.selected;
-    if (!obj) return;
+    if (!obj || this._wallEdit) return;
     this.rendu?.signalerMouvement();
     this.marquerOmbres();
 
@@ -630,12 +745,15 @@ export class Viewer {
 
   _cibles() {
     const l = this.luminaires?.objetsLibres?.() || [];
-    return l.length ? [...this.objects.values(), ...l] : [...this.objects.values()];
+    return [...this.objects.values(), ...l, ...this.selectables];
   }
 
-  /** L'objet designe par un identifiant, machine ou luminaire. */
+  /** L'objet designe par un identifiant, machine, luminaire ou mur. */
   _objet(uid) {
-    return this.objects.get(uid) || this.luminaires?.objet?.(uid) || null;
+    return this.objects.get(uid)
+      || this.luminaires?.objet?.(uid)
+      || this.selectables.find(o => o.userData?.uid === uid)
+      || null;
   }
 
   select(uid, additive = false) {
@@ -649,7 +767,17 @@ export class Viewer {
     this.selected = obj || null;
 
     if (obj) {
-      if (this.editable !== false) { this.gizmo.attach(obj); this.gizmo.visible = true; }
+      // Les murs se manipulent via le graphe topologique : on leur donne
+      // quand même la flèche de déplacement (translation seule), dont l'écart
+      // est reporté sur le graphe à la fin du geste. En mode « sélection »,
+      // aucun gizmo : on choisit seulement.
+      if (this.editable !== false && this.tool !== 'select') {
+        this.gizmo.attach(obj); this.gizmo.visible = true;
+        if (obj.userData.batiment) { this.gizmo.setMode('translate'); this.gizmo.showZ = false; }
+      } else {
+        this.gizmo.detach(); this.gizmo.visible = false;
+      }
+      this._wallEdit = obj.userData.batiment ? obj.userData.wallId : null;
       this._selSale = false;
       this.demanderImage(2);
       this.selBox.box.copy(this.boundsOf(this.selection) ?? new THREE.Box3());
@@ -658,6 +786,7 @@ export class Viewer {
       this.gizmo.detach();
       this.gizmo.visible = false;
       this.selBox.visible = false;
+      this._wallEdit = null;
     }
 
     this.hooks.onSelect?.(obj ? obj.userData.uid : null, this.selection);
@@ -680,11 +809,23 @@ export class Viewer {
 
   setTool(tool) {
     this.tool = tool;
+    // « sélection » : on pointe et on choisit, sans gizmo de transformation.
+    if (tool === 'select') {
+      this.gizmo.detach();
+      this.gizmo.visible = false;
+      return;
+    }
     this.gizmo.setMode(tool);
     if (tool === 'rotate') { this.gizmo.showX = false; this.gizmo.showY = false; this.gizmo.showZ = true; }
     else { this.gizmo.showX = this.gizmo.showY = this.gizmo.showZ = true; }
-    // référence de l'échelle uniforme au moment où l'on passe en échelle
     if (tool === 'scale') this._scaleRef = this.selected?.scale.x ?? 1;
+    // un objet déjà sélectionné : on lui rattache le gizmo quand on quitte la
+    // sélection pour un outil de transformation
+    if (this.selected && this.editable !== false) {
+      if (this.selected.userData.batiment) { this.gizmo.setMode('translate'); this.gizmo.showZ = false; }
+      this.gizmo.attach(this.selected);
+      this.gizmo.visible = true;
+    }
   }
 
   setSnap(on) {
@@ -1398,12 +1539,6 @@ export class Viewer {
     const c = b ? b.getCenter(new THREE.Vector3()) : new THREE.Vector3(0, 0, 0.4);
     const r = b ? Math.max(b.getSize(new THREE.Vector3()).length() * 0.5, 0.8) : 2.5;
     const dist = (r * 1.7) / Math.sin(this.camera.fov * DEG * 0.5);
-    const dirs = {
-      iso: new THREE.Vector3(0.62, -0.72, 0.55),
-      top: new THREE.Vector3(0, -0.0001, 1),
-      front: new THREE.Vector3(0, -1, 0.02),
-      right: new THREE.Vector3(1, 0, 0.02),
-    };
 
     // Hauteur d'œil : ce que verra celui qui entre dans la salle. La caméra
     // se place à 1,55 m du sol et regarde droit devant — pas en plongée sur
@@ -1417,7 +1552,7 @@ export class Viewer {
       return;
     }
 
-    const d = (dirs[kind] || dirs.iso).clone().normalize();
+    const d = (VUES[kind] || VUES.iso).clone().normalize();
     this._cadrer(c, c.clone().addScaledVector(d, dist), anime);
   }
 
