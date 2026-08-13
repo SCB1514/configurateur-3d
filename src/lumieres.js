@@ -165,10 +165,24 @@ export function construireLuminaire(spec, echelle = 1) {
   const r = spec.rot || [0, 0, 0];
   g.rotation.set(r[0] * DEG, r[1] * DEG, r[2] * DEG);
 
-  /* -------- la surface qui se voit -------- */
+  /* -------- la surface qui se voit --------
+
+     Face unique, tournee du cote ou part la lumiere.
+
+     Une surface emissive en double face brille aussi par l'arriere : un
+     plafonnier eclaire alors le dessus du faux plafond, une dalle vue de
+     dessus semble allumee alors qu'elle n'eclaire rien de ce cote. Ce
+     n'etait pas qu'une question d'aspect — l'oeil en deduisait un
+     comportement que la source n'a pas.
+
+     La ponctuelle fait exception, et c'est normal : elle rayonne
+     reellement dans toutes les directions, sa sphere doit briller partout.
+     Elle est fermee, la face unique lui suffit. */
+  const rayonnante = spec.type === 'point';
   const matiere = new THREE.MeshStandardMaterial({
     color: 0x000000, emissive: couleur, emissiveIntensity: eclat,
-    roughness: 0.4, metalness: 0, side: THREE.DoubleSide,
+    roughness: 0.4, metalness: 0,
+    side: THREE.FrontSide,
   });
 
   let geometrie, largeur = 0, hauteur = 0;
@@ -206,6 +220,11 @@ export function construireLuminaire(spec, echelle = 1) {
       geometrie = new THREE.PlaneGeometry(largeur, hauteur);
     }
   }
+
+  /* Un plan de three regarde vers +Z ; l'emission se fait vers -Z. Sans
+     retournement, la face visible serait celle qui n'eclaire pas — on
+     verrait le dos de la dalle depuis la piece qu'elle illumine. */
+  if (!rayonnante) geometrie.rotateX(Math.PI);
 
   const surface = new THREE.Mesh(geometrie, matiere);
   surface.userData.surfaceLumineuse = true;
