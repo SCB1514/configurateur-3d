@@ -259,6 +259,24 @@ export class Library {
         g.setAttribute('uv1', g.getAttribute('uv'));
       }
 
+      /* L'anisotropie exige des tangentes, donc des coordonnees de texture.
+
+         Sans elles, three compile un nuancier invalide et la scene ENTIERE
+         part au noir — pas seulement la piece fautive. Le defaut est d'autant
+         plus deroutant que les vignettes, rendues par un autre chemin,
+         restent correctes. On calcule donc les tangentes quand on peut, et
+         on renonce a l'anisotropie quand on ne peut pas. */
+      if (Number.isFinite(m.anisotropy) && m.anisotropy > 0) {
+        if (g.getAttribute('uv') && g.getIndex()) {
+          try { g.computeTangents(); } catch { delete m.anisotropy; }
+          if (!g.getAttribute('tangent')) delete m.anisotropy;
+        } else {
+          console.warn(`Anisotropie ignorée sur « ${m.name || raw.id} » : `
+                     + "le maillage n'a pas de coordonnées de texture.");
+          delete m.anisotropy;
+        }
+      }
+
       parts.push({
         geometry: g,
         color: m.color || '#b9c2cd',
@@ -272,7 +290,13 @@ export class Library {
           'sheenRoughness', 'transmission', 'thickness', 'ior', 'anisotropy',
           'anisotropyRotation', 'specularIntensity', 'specularColor',
           'attenuationColor', 'attenuationDistance']
-          .filter(k => m[k] !== undefined).map(k => [k, m[k]])),
+          .filter(k => m[k] !== undefined)
+          // epaisseur et distance d'attenuation sont des LONGUEURS : elles se
+          // convertissent comme la geometrie. Laissees en millimetres dans un
+          // moteur qui compte en metres, un verre de 26 cm se comporte comme
+          // un bloc de 260 m et la teinte n'apparait jamais.
+          .map(k => [k, (k === 'thickness' || k === 'attenuationDistance')
+                        ? m[k] * s : m[k]])),
         material: m.material || '',
         emissive: m.emissive || '',
         emissiveIntensite: m.emissiveIntensite ?? m.emissiveIntensity ?? 1.6,

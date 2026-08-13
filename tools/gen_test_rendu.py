@@ -86,6 +86,65 @@ def cylindre(cx, cy, cz, rayon, hauteur, segments=24, axe="z"):
     return pos, nor, idx
 
 
+def noeud_trefle(cx, cy, cz, rayon=600.0, tube=170.0, pas=180, cotes=24, p=2, q=3):
+    """
+    Un noeud torique, la forme d'essai la plus severe qu'on puisse ecrire
+    en trente lignes.
+
+    Elle cumule ce qui met un rendu en defaut : courbure qui change
+    continument, surface qui se voit elle-meme sous tous les angles,
+    auto-occlusion serree dans les croisements, et pas une seule arete
+    franche derriere laquelle cacher une approximation. Un vernis mal pose
+    s'y voit immediatement, la ou un cube le pardonne.
+    """
+    import math
+
+    def courbe(t):
+        # parametrage classique du noeud (p, q) sur un tore
+        u = t * 2.0 * math.pi
+        r = rayon * (2.0 + math.cos(q * u / p)) / 3.0
+        return (r * math.cos(u), r * math.sin(u),
+                rayon * math.sin(q * u / p) / 3.0)
+
+    pos, nor, idx, uvs = [], [], [], []
+    for i in range(pas):
+        t0 = i / float(pas)
+        c = courbe(t0)
+        # repere de Frenet approche par differences finies : suffisant ici,
+        # et sans la derive d'un transport parallele mal initialise
+        a = courbe(t0 - 0.5 / pas)
+        b = courbe(t0 + 0.5 / pas)
+        tx, ty, tz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+        n = math.sqrt(tx * tx + ty * ty + tz * tz) or 1.0
+        tx, ty, tz = tx / n, ty / n, tz / n
+
+        # une normale quelconque orthogonale a la tangente
+        ax, ay, az = (0.0, 0.0, 1.0) if abs(tz) < 0.9 else (1.0, 0.0, 0.0)
+        nx, ny, nz = ty * az - tz * ay, tz * ax - tx * az, tx * ay - ty * ax
+        n = math.sqrt(nx * nx + ny * ny + nz * nz) or 1.0
+        nx, ny, nz = nx / n, ny / n, nz / n
+        bx, by, bz = ty * nz - tz * ny, tz * nx - tx * nz, tx * ny - ty * nx
+
+        for j in range(cotes):
+            v = 2.0 * math.pi * j / cotes
+            cv, sv = math.cos(v), math.sin(v)
+            dx, dy, dz = nx * cv + bx * sv, ny * cv + by * sv, nz * cv + bz * sv
+            pos += [cx + c[0] + dx * tube, cy + c[1] + dy * tube, cz + c[2] + dz * tube]
+            nor += [dx, dy, dz]
+            # les coordonnees de texture viennent gratuitement du parametrage,
+            # et sans elles pas de tangentes, donc pas d'anisotropie possible
+            uvs += [t0, j / float(cotes)]
+
+    for i in range(pas):
+        for j in range(cotes):
+            a0 = i * cotes + j
+            a1 = i * cotes + (j + 1) % cotes
+            b0 = ((i + 1) % pas) * cotes + j
+            b1 = ((i + 1) % pas) * cotes + (j + 1) % cotes
+            idx += [a0, b0, b1, a0, b1, a1]
+    return pos, nor, idx, uvs
+
+
 def fusion(*morceaux):
     pos, nor, idx = [], [], []
     for p, n, i in morceaux:
@@ -95,9 +154,15 @@ def fusion(*morceaux):
 
 
 def maillage(nom, geo, materiau, **extra):
-    pos, nor, idx = geo
+    uvs = None
+    if len(geo) == 4:
+        pos, nor, idx, uvs = geo
+    else:
+        pos, nor, idx = geo
     m = {"name": nom, "positions": [round(v, 2) for v in pos],
          "normals": [round(v, 4) for v in nor], "indices": idx}
+    if uvs:
+        m["uv"] = [round(v, 4) for v in uvs]
     m.update(materiau)
     m.update(extra)
     return m
@@ -120,6 +185,39 @@ ECRAN       = {"color": "#05070a", "metalness": 0.10, "roughness": 0.22,
                "emissive": "#1f6fff", "emissiveIntensite": 2.4}
 NEON        = {"color": "#050505", "metalness": 0.00, "roughness": 0.40,
                "emissive": "#ff3b6b", "emissiveIntensite": 5.0}
+
+
+# ── matieres exigeantes : celles ou une approximation se voit ──
+
+CARROSSERIE = {
+    "color": "#6d1220", "metalness": 0.90, "roughness": 0.26,
+    "clearcoat": 1.0, "clearcoatRoughness": 0.045,
+    # l'irisation figure le paillettage d'une peinture metallisee : la
+    # teinte glisse vers l'ambre en incidence rasante
+    "iridescence": 0.35, "iridescenceIOR": 1.6,
+    "iridescenceEpaisseur": [120, 420],
+    "specularIntensity": 1.0, "paintable": True,
+}
+
+VERRE_EPAIS = {
+    "color": "#ffffff", "metalness": 0.0, "roughness": 0.03,
+    "transmission": 1.0, "thickness": 260.0, "ior": 1.52,
+    "attenuationColor": "#8fd8c8", "attenuationDistance": 900.0,
+}
+
+METAL_BROSSE_ANISO = {
+    "color": "#c3c8ce", "metalness": 1.0, "roughness": 0.30,
+    # l'anisotropie etire le reflet dans le sens du brossage : c'est elle
+    # qui distingue un inox brosse d'un inox simplement rugueux
+    "anisotropy": 0.85, "anisotropyRotation": 0.0,
+}
+
+VELOURS = {
+    "color": "#1b2440", "metalness": 0.0, "roughness": 0.95,
+    # le duvet : la lumiere accroche les bords de la piece plutot que son
+    # centre, ce qu'aucun reglage de rugosite ne sait imiter
+    "sheen": 1.0, "sheenColor": "#7f9dff", "sheenRoughness": 0.35,
+}
 
 
 # ─────────────────────── profil photometrique ───────────────────────
@@ -284,6 +382,20 @@ def bloc_projecteur():
     }
 
 
+def bloc_noeud(nom, cle, matiere, prix, description):
+    """Le noeud de trefle, decline dans une matiere donnee."""
+    return {
+        "id": "noeud-" + cle, "name": nom,
+        "category": "Essais", "price": prix,
+        "description": description,
+        "meshes": [
+            maillage("Socle", cylindre(0, 0, 30, 620, 60), PLASTIQUE),
+            maillage(nom, noeud_trefle(0, 0, 900), matiere),
+        ],
+        "connectors": [{"type": "*", "main": True, "pos": [0, 0, 0]}],
+    }
+
+
 def bloc_verre():
     """Une paroi de verre : le cas ou la transparence croise l'ombre."""
     return {
@@ -319,10 +431,28 @@ def construire():
             {"id": "verre", "name": "Verre teinte", **VERRE},
             {"id": "ecran", "name": "Ecran retro-eclaire", **ECRAN},
             {"id": "neon", "name": "Diffuseur lumineux", **NEON},
+            {"id": "carrosserie", "name": "Carrosserie metallisee", **CARROSSERIE},
+            {"id": "verre-epais", "name": "Verre epais", **VERRE_EPAIS},
+            {"id": "inox-brosse", "name": "Inox brosse", **METAL_BROSSE_ANISO},
+            {"id": "velours", "name": "Velours", **VELOURS},
         ],
         "blocks": [
             bloc_vitrine(), bloc_machine_led(), bloc_verre(),
             bloc_dalle(), bloc_downlight(), bloc_projecteur(),
+            bloc_noeud("Noeud carrosserie", "carrosserie", CARROSSERIE, 0,
+                       "Peinture de carrosserie sur forme complexe : vernis, "
+                       "paillettage irise, courbure continue. Le reflet blanc "
+                       "doit glisser sur la tole independamment de la couleur."),
+            bloc_noeud("Noeud verre epais", "verre", VERRE_EPAIS, 0,
+                       "Verre transmissif de 26 cm d'epaisseur, teinte qui se "
+                       "fonce avec le trajet optique. On doit voir au travers, "
+                       "et la teinte doit s'assombrir dans les parties epaisses."),
+            bloc_noeud("Noeud inox brosse", "inox", METAL_BROSSE_ANISO, 0,
+                       "Anisotropie : le reflet doit s'etirer dans le sens du "
+                       "brossage, pas former une tache ronde."),
+            bloc_noeud("Noeud velours", "velours", VELOURS, 0,
+                       "Duvet : la lumiere doit accrocher les bords de la piece "
+                       "plutot que son centre."),
         ],
         "presets": [{
             "id": "banc", "name": "Banc complet",
