@@ -2,6 +2,7 @@ import * as THREE from '../vendor/three/three.module.js';
 import { OrbitControls } from '../vendor/three/addons/controls/OrbitControls.js';
 import { TransformControls } from '../vendor/three/addons/controls/TransformControls.js';
 import { Rendu } from './render.js';
+import { Luminaires, construireLuminaire } from './lumieres.js';
 import { buildStandardMaterial, materialKey } from './library.js';
 
 /* ============================================================
@@ -26,16 +27,40 @@ export class Viewer {
     this.selection = [];
     this._materials = new Map();
 
-    /* ---------- renderer ---------- */
-    this.renderer = new THREE.WebGLRenderer({
-      canvas, antialias: true, alpha: false, preserveDrawingBuffer: true,
+    /* ---------- renderer ----------
+       WebGL 2 explicitement, pas par defaut heureux : c'est lui qui donne
+       l'antialiasing materiel sur les cibles de rendu, les textures en
+       virgule flottante sans extension, et les tampons multiples. Le
+       repli WebGL 1 rendrait la moitie de ce fichier inoperante — mieux
+       vaut le dire tout de suite que rendre une image degradee sans
+       expliquer pourquoi.  */
+    const contexte = canvas.getContext('webgl2', {
+      antialias: true, alpha: false, preserveDrawingBuffer: true,
+      powerPreference: 'high-performance', stencil: false, depth: true,
     });
+    if (!contexte) {
+      throw new Error('WebGL 2 est indisponible sur cet appareil : '
+                    + 'le configurateur ne peut pas afficher la scene.');
+    }
+
+    this.renderer = new THREE.WebGLRenderer({
+      canvas, context: contexte, antialias: true, alpha: false,
+      preserveDrawingBuffer: true, powerPreference: 'high-performance',
+    });
+    this.webgl2 = true;
+    // l'anisotropie redresse les textures vues de biais — le sol, surtout
+    this.anisotropieMax = this.renderer.capabilities.getMaxAnisotropy();
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // La carte d'ombre se refaisait a chaque image alors que rien ne bouge la
+    // plupart du temps : c'est une seconde traversee complete de la scene,
+    // pour un resultat identique. On ne la recalcule que sur demande.
+    this.renderer.shadowMap.autoUpdate = false;
+    this.renderer.shadowMap.needsUpdate = true;
 
     /* ---------- scène ---------- */
     this.scene = new THREE.Scene();
@@ -50,10 +75,25 @@ export class Viewer {
     this.camera.up.set(0, 0, 1);
     this.camera.position.set(4.5, -6.5, 4.2);
 
+    /* Le toucher de la navigation.
+
+       La fluidite ne tient pas qu'au nombre d'images par seconde : elle tient
+       d'abord a la reponse. Un amortissement trop mou donne l'impression de
+       pousser un meuble, et un zoom qui vise le centre de l'ecran oblige a
+       recadrer sans cesse. Les valeurs ci-dessous sont celles des
+       configurateurs qui paraissent vifs.  */
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.08;
-    // pas de bridage : on doit pouvoir passer sous le sol pour travailler en Z negatif
+    this.controls.dampingFactor = 0.14;      // repond vite, sans a-coup
+    this.controls.rotateSpeed = 0.85;
+    this.controls.zoomSpeed = 1.15;
+    this.controls.panSpeed = 0.9;
+    this.controls.zoomToCursor = true;       // on zoome sur ce qu'on regarde
+    this.controls.screenSpacePanning = true;
+    this.controls.minDistance = 0.4;
+    this.controls.maxDistance = 200;
+    // pas de bridage angulaire : on doit pouvoir passer sous le sol pour
+    // travailler en Z negatif
     this.controls.target.set(0, 0, 0.4);
 
     /* ---------- lumières ---------- */
@@ -181,6 +221,9 @@ export class Viewer {
     canvas.addEventListener('pointerup', e => this._onUp(e));
     canvas.addEventListener('pointerleave', () => { if (this.ghost) this.ghost.visible = false; });
 
+    /* ---------- luminaires ---------- */
+    this.luminaires = new Luminaires(this);
+
     /* ---------- moteur de rendu ---------- */
     this.rendu = new Rendu(this);
     this.rendu.appliquerEnvironnement('studio');
@@ -212,14 +255,60 @@ export class Viewer {
     this._animerCamera();
     this.controls.update();
     this._detecterMouvement();
-    if (this.selected) {
+
+    // La boite englobante d'une selection exige de parcourir tous les
+    // maillages : elle ne se refait que si la selection a bouge.
+    if (this.selected && this._selSale) {
       const b = this.boundsOf(this.selection);
       if (b) this.selBox.box.copy(b);
+      this._selSale = false;
     }
     if (this.dimGroup) this._orientDimensions();
     this._suivreEmprise();
+    this.luminaires.arbitrer();
+    this._mesurerRythme();
     if (!this.rendu?.rendre()) this.renderer.render(this.scene, this.camera);
   };
+
+  /**
+   * Mesure le rythme d'affichage et allege le rendu si la machine peine.
+   *
+   * Le jugement se porte sur une fenetre glissante et une seule fois : une
+   * carte modeste passe en mode rapide au demarrage, et l'utilisateur garde
+   * la main pour revenir en qualite haute s'il le souhaite.
+   */
+  _mesurerRythme() {
+    const t = performance.now();
+    const precedent = this._tImage || t;
+    this._tImage = t;
+
+    const ecart = t - precedent;
+    if (ecart <= 0 || ecart > 500) return;                 // onglet en arriere-plan
+    this._rythme = this._rythme ? this._rythme * 0.94 + ecart * 0.06 : ecart;
+    this.imagesParSeconde = Math.round(1000 / this._rythme);
+
+    if (this._qualiteJugee) return;
+    this._tDepart = this._tDepart || t;
+    if (t - this._tDepart < 2500) return;                  // le temps de se chauffer
+    this._qualiteJugee = true;
+
+    if (this.imagesParSeconde < 24 && this.rendu?.reglages.qualite === 'haute') {
+      this.rendu.regler({ qualite: 'rapide' });
+      this.hooks.onQualite?.('rapide', this.imagesParSeconde);
+    }
+  }
+
+  /**
+   * Demande un nouveau calcul des ombres a la prochaine image.
+   *
+   * A appeler des qu'une geometrie apparait, disparait ou se deplace, et
+   * quand le soleil change de place. Oublier un cas laisse une ombre
+   * perimee a l'ecran : c'est le seul risque de ce reglage, et il se voit.
+   */
+  marquerOmbres() {
+    this.renderer.shadowMap.needsUpdate = true;
+    this._selSale = true;
+  }
 
   /**
    * Le sol et le cadre d'ombre suivent l'emprise des machines.
@@ -306,6 +395,10 @@ export class Viewer {
       g.add(mesh);
     }
 
+    for (const spec of block.lumieres || []) {
+      g.add(construireLuminaire(spec, this.lib?.scale ?? 1));
+    }
+
     if (depth < 6) {
       for (const child of block.children || []) {
         const sous = this.lib?.block(child.blockId);
@@ -335,6 +428,8 @@ export class Viewer {
     this._applyTransform(obj, item, block);
     this.scene.add(obj);
     this.objects.set(item.uid, obj);
+    this.luminaires.recenser(obj);
+    this.marquerOmbres();
     return obj;
   }
 
@@ -352,8 +447,10 @@ export class Viewer {
     const obj = this.objects.get(uid);
     if (!obj) return;
     if (this.selected === obj) this.select(null);
+    this.luminaires.oublier(obj);
     this.scene.remove(obj);
     this.objects.delete(uid);
+    this.marquerOmbres();
   }
 
   clear() {
@@ -382,12 +479,14 @@ export class Viewer {
     obj.scale.set(s, s, s);
     obj.userData.finish = item.finish;
     obj.userData.color = item.color;
+    this.marquerOmbres();
   }
 
   _readTransform() {
     const obj = this.selected;
     if (!obj) return;
     this.rendu?.signalerMouvement();
+    this.marquerOmbres();
     const block = this.lib.block(obj.userData.blockId);
 
     // Déplacement de groupe.
@@ -443,6 +542,7 @@ export class Viewer {
 
     if (obj) {
       if (this.editable !== false) { this.gizmo.attach(obj); this.gizmo.visible = true; }
+      this._selSale = false;
       this.selBox.box.copy(this.boundsOf(this.selection) ?? new THREE.Box3());
       this.selBox.visible = true;
     } else {
@@ -725,6 +825,7 @@ export class Viewer {
     const f = block.finishes.find(x => x.id === finish);
     const g = this._build(block, f?.color);
     g.traverse(o => {
+      if (o.isLight) { o.visible = false; o.userData.luminaire = false; }
       if (!o.isMesh) return;
       o.castShadow = false;
       o.material = o.material.clone();

@@ -56,6 +56,9 @@ export class Library {
       metalness: m.metalness ?? 0.05,
       roughness: m.roughness ?? 0.72,
       opacity: m.opacity ?? 1,
+      // une matiere peut s'eclairer elle-meme : ecran, anneau de LED, logo
+      emissive: m.emissive || '',
+      emissiveIntensite: m.emissiveIntensite ?? m.emissiveIntensity ?? 1.6,
       maps: this._maps(m.maps || m.textures),
     })).filter(m => m.id);
     this.materialsById = new Map(this.materials.map(m => [m.id.toLowerCase(), m]));
@@ -237,6 +240,8 @@ export class Library {
         roughness: m.roughness ?? 0.72,
         paintable: !!m.paintable,
         material: m.material || '',
+        emissive: m.emissive || '',
+        emissiveIntensite: m.emissiveIntensite ?? m.emissiveIntensity ?? 1.6,
         maps,
         name: m.name || '',
       });
@@ -274,9 +279,32 @@ export class Library {
       };
     }).filter(c => c.blockId);
 
+    /* --- luminaires : bandeaux de LED, dalles, downlights, projecteurs.
+       Les cotes restent en unites de bibliotheque ; c'est le constructeur
+       du luminaire qui convertit, car lui seul sait ce qu'il fabrique. --- */
+    const lumieres = (raw.lumieres || []).map(l => ({
+      type: ['bande', 'rectangle', 'disque', 'spot'].includes(l.type) ? l.type : 'rectangle',
+      pos: l.pos || [0, 0, 0],
+      rot: l.rot || [0, 0, 0],
+      taille: l.taille,
+      longueur: l.longueur,
+      largeur: l.largeur,
+      rayon: l.rayon,
+      couleur: l.couleur || '#ffffff',
+      intensite: Number(l.intensite) || 4,
+      eclat: l.eclat === undefined ? undefined : Number(l.eclat),
+      portee: Number(l.portee) || 0,
+      angle: l.angle === undefined ? undefined : Number(l.angle),
+      penombre: l.penombre === undefined ? undefined : Number(l.penombre),
+      ies: typeof l.ies === 'string' ? l.ies : null,
+      nom: l.nom || '',
+      actif: l.actif !== false,
+    }));
+
     const size = bounds.getSize(new THREE.Vector3());
     return {
       id: String(raw.id),
+      lumieres,
       name: raw.name || raw.id,
       category: raw.category || '',
       tags: raw.tags || [],
@@ -292,8 +320,12 @@ export class Library {
       parts,
       bbox: bounds,
       size,
-      // Z de pose : par défaut le bas de la boîte est ramené au sol
-      baseOffset: -bounds.min.z,
+      /* Z de pose. Par defaut le bas de la boite est ramene au sol — c'est
+         ce qu'on veut d'une machine. Un appareil de plafond, lui, est
+         modelise a sa hauteur d'installation : le ramener au sol le rendrait
+         absurde. Une valeur explicite dans la bibliotheque prime donc, et
+         `baseOffset: 0` signifie « garde le Z tel qu'il a ete modelise ». */
+      baseOffset: Number.isFinite(raw.baseOffset) ? raw.baseOffset * s : -bounds.min.z,
       stackable: raw.stackable !== false,
     };
   }
@@ -361,6 +393,15 @@ export function buildStandardMaterial(part, couleur) {
     });
   }
 
+  // Une piece emissive s'eclaire elle-meme : ecran de console, anneau de
+  // LED, logo retro-eclaire. L'intensite depasse volontiers 1 — c'est ce
+  // depassement que le halo ramasse.
+  if (part.emissive && part.emissive !== '#000000') {
+    options.emissive = new THREE.Color(part.emissive);
+    options.emissiveIntensity = part.emissiveIntensite ?? 1.6;
+    if (maps.emissiveMap) options.emissiveMap = maps.emissiveMap;
+  }
+
   const m = laque ? new THREE.MeshPhysicalMaterial(options)
                   : new THREE.MeshStandardMaterial(options);
   // Vector2 et scalaire : à poser après coup, le constructeur ne les convertit pas.
@@ -372,7 +413,7 @@ export function buildStandardMaterial(part, couleur) {
 /** Signature d'un matériau, pour n'en construire qu'un par combinaison. */
 export function materialKey(part, couleur) {
   return [couleur || part.color, part.opacity, part.metalness, part.roughness,
-    part.material || ''].join('|');
+    part.material || '', part.emissive || '', part.emissiveIntensite ?? ''].join('|');
 }
 
 /** Construit une bibliothèque à partir d'un JSON déjà téléchargé. */

@@ -376,7 +376,12 @@ body.viewonly .panel-foot.actions .btn-row,body.viewonly #btn-clear{display:none
 .rp-check{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--txt-dim);cursor:pointer}
 .rp-check input{accent-color:var(--accent);margin:0}
 .rp-check:hover{color:var(--txt)}
-.rp-foot{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:10px 12px}
+.rp-foot{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:10px 12px 6px}
+.rp-mesure{padding:0 12px 10px;font-size:10.5px;color:var(--txt-dim);
+  display:flex;align-items:baseline;gap:6px;font-variant-numeric:tabular-nums}
+.rp-mesure span{color:var(--txt);font-weight:600}
+.rp-mesure em{font-style:normal;font-size:10px;opacity:.7;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;min-width:0}
 
 @media (max-width:900px){
   .render-panel{left:8px;right:8px;bottom:64px;width:auto}

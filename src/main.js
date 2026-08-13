@@ -57,6 +57,12 @@ async function boot() {
       if (it) { Object.assign(it, patch); refreshSelectionPanel(); refreshDimensions(); scheduleSave(); }
     },
     onCommit: () => pushHistory(),
+    onQualite: (niveau, fps) => {
+      // la machine ne suivait pas : on allege, et on le dit plutot que de
+      // laisser croire a un rendu degrade sans raison
+      refreshRendu();
+      toast(`Rendu allégé — ${fps} images/s en qualité haute`);
+    },
   });
   app.viewer.setEditable(!app.viewonly);
   app.thumbs = new ThumbnailFactory(256);
@@ -120,6 +126,18 @@ async function resolveSource(preferredKey) {
   } else {
     const path = src.library || app.config.library || 'data/library.json';
     app.catalogue = [{ key: path, name: prettyName(path.split('/').pop()), file: path }];
+
+    /* Une autre bibliothèque du même site, demandée par l'adresse.
+       Le chemin est bridé à une ressource locale : ni protocole, ni hôte, ni
+       remontée de dossier. Le mode statique ne sort pas du site, c'est la
+       règle du périmètre réseau — une source extérieure passe par un
+       fournisseur déclaré, jamais par un paramètre d'URL. */
+    const demande = params.get('lib');
+    if (demande && /^[\w./-]+\.json$/.test(demande) && !demande.includes('..')
+        && demande !== path) {
+      app.catalogue.push({ key: demande, name: prettyName(demande.split('/').pop()),
+                           file: demande });
+    }
   }
 
   // choix : lien partagé > paramètre ?lib= > config > première entrée
@@ -875,6 +893,7 @@ function wireRendu() {
 
   $('#rp-rotation').onchange = e => { app.viewer.setRotationAuto(e.target.checked); sauverRendu(); };
   $('#rp-sol').onchange = e => { rendu.regler({ sol: e.target.checked }); sauverRendu(); };
+  $('#rp-reflets').onchange = e => { rendu.regler({ reflets: e.target.checked }); sauverRendu(); };
   $('#rp-reperes').onchange = e => { rendu.regler({ reperes: e.target.checked }); sauverRendu(); };
   $('#rp-qualite').onchange = e => {
     rendu.regler({ qualite: e.target.checked ? 'haute' : 'rapide' });
@@ -883,7 +902,7 @@ function wireRendu() {
 
   $('#rp-reset').onclick = () => {
     rendu.regler({ ombres: 0.7, occlusion: 0.7, bloom: 0.2, sol: true,
-                   reperes: true, qualite: 'haute' });
+                   reflets: true, reperes: true, qualite: 'haute' });
     rendu.appliquerEnvironnement('studio');
     app.viewer.setFocale(40);
     app.viewer.setRotationAuto(false);
@@ -902,6 +921,33 @@ function wireRendu() {
 
   chargerRendu();
   refreshRendu();
+  suivreRythme();
+}
+
+/**
+ * Affiche le rythme reel et la carte graphique.
+ *
+ * Sans ce chiffre, tout reglage de qualite se fait a l'aveugle : le meme
+ * projet tourne a cent images par seconde sur une station et a quinze sur un
+ * portable a puce integree, et rien a l'ecran ne le dit.
+ */
+function suivreRythme() {
+  const champ = $('#rp-fps');
+  const carte = $('#rp-gpu');
+
+  try {
+    const gl = app.viewer.renderer.getContext();
+    const info = gl.getExtension('WEBGL_debug_renderer_info');
+    const nom = info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : '';
+    // on ne garde que la puce, pas la ribambelle de pilotes entre parentheses
+    carte.textContent = String(nom).replace(/^ANGLE \(|\)$/g, '').split(',')[1]?.trim() || nom;
+    carte.title = nom;
+  } catch { /* extension refusee */ }
+
+  setInterval(() => {
+    const n = app.viewer?.imagesParSeconde;
+    if (n) champ.textContent = n;
+  }, 500);
 }
 
 /** Remet les commandes au diapason de l'état réel du moteur. */
@@ -921,6 +967,7 @@ function refreshRendu() {
 
   $('#rp-rotation').checked = app.viewer.rotationAuto;
   $('#rp-sol').checked = r.sol;
+  $('#rp-reflets').checked = r.reflets;
   $('#rp-reperes').checked = r.reperes;
   $('#rp-qualite').checked = r.qualite === 'haute';
 }
@@ -944,7 +991,7 @@ function chargerRendu() {
   // doit pas pouvoir injecter n'importe quoi dans le moteur.
   const patch = {};
   for (const cle of ['environnement', 'exposition', 'ombres', 'occlusion', 'bloom',
-                     'sol', 'reperes', 'qualite']) {
+                     'sol', 'reflets', 'reperes', 'qualite']) {
     if (memo[cle] !== undefined) patch[cle] = memo[cle];
   }
   if (patch.environnement && !ENVIRONNEMENTS[patch.environnement]) delete patch.environnement;

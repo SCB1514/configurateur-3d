@@ -36,13 +36,19 @@ export const ENVIRONNEMENTS = {
     // et non une couleur unie, qui détache le sujet et donne la profondeur.
     fondCentre: 0x2b323d, fondBord: 0x0a0c10,
     sol: 0x1b1f27, solRugosite: 0.26, solMetal: 0.0,
-    env: { ciel: 0x2a3038, horizon: 0x14181e, sol: 0x0d1015 },
-    exposition: 1.2, soleil: 2.6, ambiance: 0.15,
-    // trois boîtes lumineuses : clé, contre-jour, remplissage
+    // Attention au piège : la voûte d'éclairage n'est PAS le fond visible.
+    // Un métal poli ne montre rien d'autre que ce qu'il reflète ; avec une
+    // voûte aussi sombre que le fond, le chrome vire au noir et les huit
+    // matières se ressemblent toutes. On garde donc un fond de studio
+    // sombre et une voûte de mi-gris, comme une vraie boîte à lumière.
+    env: { ciel: 0x5c6470, horizon: 0x343b46, sol: 0x191d24 },
+    exposition: 1.15, soleil: 2.6, ambiance: 0.15, reflet: 0.30,
+    // trois boîtes lumineuses : clé, contre-jour, remplissage. Petites et
+    // vives : c'est ce qui donne au chrome sa traînée franche.
     sources: [
-      { pos: [4, -5, 6], taille: [5, 3], couleur: 0xffffff, force: 4.5 },
-      { pos: [-6, 3, 4], taille: [4, 4], couleur: 0xa8c8ff, force: 2.0 },
-      { pos: [0, 7, 3], taille: [6, 2], couleur: 0xfff0dc, force: 1.4 },
+      { pos: [4, -5, 6], taille: [5, 3], couleur: 0xffffff, force: 7.0 },
+      { pos: [-6, 3, 4], taille: [4, 4], couleur: 0xa8c8ff, force: 3.0 },
+      { pos: [0, 7, 3], taille: [6, 2], couleur: 0xfff0dc, force: 2.0 },
     ],
   },
   showroom: {
@@ -50,7 +56,7 @@ export const ENVIRONNEMENTS = {
     fondCentre: 0xf2f5f8, fondBord: 0xc6ccd5,
     sol: 0xdfe3e9, solRugosite: 0.45, solMetal: 0.0,
     env: { ciel: 0xc4cad3, horizon: 0x99a0aa, sol: 0x79808a },
-    exposition: 0.95, soleil: 2.2, ambiance: 0.10,
+    exposition: 0.95, soleil: 2.2, ambiance: 0.10, reflet: 0.18,
     sources: [
       { pos: [5, -4, 7], taille: [6, 4], couleur: 0xffffff, force: 2.4 },
       { pos: [-5, 4, 6], taille: [6, 4], couleur: 0xffffff, force: 1.6 },
@@ -61,8 +67,8 @@ export const ENVIRONNEMENTS = {
     nom: 'Atelier',
     fondCentre: 0x3b434f, fondBord: 0x171a20,
     sol: 0x2f343d, solRugosite: 0.62, solMetal: 0.0,
-    env: { ciel: 0x39414d, horizon: 0x1c2027, sol: 0x14171c },
-    exposition: 1.05, soleil: 3.0, ambiance: 0.18,
+    env: { ciel: 0x6b7381, horizon: 0x3a414c, sol: 0x1f242b },
+    exposition: 1.0, soleil: 3.0, ambiance: 0.18, reflet: 0.25,
     sources: [
       { pos: [6, -6, 8], taille: [3, 3], couleur: 0xfff2e0, force: 5.0 },
       { pos: [-7, 2, 5], taille: [2, 5], couleur: 0x9fc0ff, force: 1.6 },
@@ -166,6 +172,7 @@ export class Rendu {
       occlusion: 0.7,
       bloom: 0.2,
       sol: true,
+      reflets: true,           // le sol renvoie les machines, comme un sol de showroom ciré
       reperes: true,           // grille et axes — utiles pour poser, non pour présenter
       qualite: 'haute',        // 'rapide' | 'haute'
     };
@@ -265,6 +272,7 @@ export class Rendu {
     this._sol.geometry.dispose();
     this._sol.geometry = new THREE.PlaneGeometry(cote, cote);
     this._sol.position.set(centre.x, centre.y, Math.min(emprise.min.z, 0) + 0.001);
+    this.polirSol(reglage);
 
     // La caméra d'ombre épouse les machines, pas le sol : chaque mètre carré
     // de carte d'ombre dépensé hors du sujet est de la finesse perdue.
@@ -287,10 +295,39 @@ export class Rendu {
       if (!sun.target.parent) viewer.scene.add(sun.target);
       sun.target.updateMatrixWorld();
       sun.shadow.camera.updateProjectionMatrix();
-      sun.shadow.mapSize.set(2048, 2048);
+      sun.shadow.mapSize.set(this.reglages.qualite === 'haute' ? 2048 : 1024,
+                             this.reglages.qualite === 'haute' ? 2048 : 1024);
+      viewer.marquerOmbres();
       sun.shadow.bias = -0.0006;
       sun.shadow.normalBias = 0.02;
     }
+  }
+
+  /* ---------------- brillant du sol ----------------
+     Un sol de showroom renvoie l'image des machines. La facon evidente de
+     l'obtenir est un miroir plan : on rend la scene une seconde fois depuis
+     une camera symetrique. Deux raisons de ne pas le faire ici.
+
+     La premiere est le prix : c'est un doublement du rendu, sur une
+     application dont on demande d'abord la fluidite.
+
+     La seconde s'est vue a l'ecran. Le Reflector de three melange son
+     resultat par superposition, et le reflet sortait plus lumineux que les
+     objets reels — une impossibilite physique que l'oeil repere aussitot.
+
+     Le sol renvoie donc son environnement par sa seule matiere : c'est
+     gratuit, c'est juste, et cela suffit a poser les machines. Le reglage
+     « reflets » commande alors le poli du sol, du mat au cire.
+     ------------------------------------------------ */
+
+  polirSol(reglage) {
+    if (!this._sol) return;
+    const poli = this.reglages.reflets ? (reglage.reflet ?? 0.3) : 0;
+
+    // un sol cire est lisse et renvoie beaucoup ; un sol mat, l'inverse
+    this._sol.material.roughness = reglage.solRugosite * (1 - poli * 0.75);
+    this._sol.material.envMapIntensity = 0.6 + poli * 1.6;
+    this._sol.material.needsUpdate = true;
   }
 
   /* ---------------- post-traitement ---------------- */
@@ -312,7 +349,23 @@ export class Rendu {
     const el = viewer.canvas.parentElement;
     const largeur = el.clientWidth || 1, hauteur = el.clientHeight || 1;
 
-    const composer = new EffectComposer(viewer.renderer);
+    /* L'antialiasing materiel, reserve a WebGL 2.
+
+       Un compositeur rend hors ecran, ou l'antialiasing du canevas ne
+       s'applique plus : d'ou les escaliers sur les aretes des chassis des
+       qu'on branche du post-traitement. WebGL 2 sait lisser la cible
+       elle-meme, a quatre echantillons, dans le materiel. C'est meilleur
+       que le lissage logiciel SMAA et cela coute moins cher sur une vraie
+       carte — SMAA ne reste que pour les cartes qui refusent le multi-
+       echantillonnage.  */
+    const echantillons = viewer.renderer.capabilities.isWebGL2 ? 4 : 0;
+    const cible = new THREE.WebGLRenderTarget(largeur, hauteur, {
+      type: THREE.HalfFloatType, samples: echantillons,
+      colorSpace: THREE.LinearSRGBColorSpace,
+    });
+
+    const composer = new EffectComposer(viewer.renderer, cible);
+    this._msaa = echantillons;
     composer.setSize(largeur, hauteur);
     // 1,5 plutôt que 2 : les cibles de rendu du compositeur sont en virgule
     // flottante et coûtent quatre fois plus cher qu'un pixel d'écran. Le
@@ -361,7 +414,32 @@ export class Rendu {
 
     p.bloom.enabled = this.reglages.bloom > 0.01;
     p.bloom.strength = this.reglages.bloom;
-    p.smaa.enabled = haute;
+    // Le multi-echantillonnage materiel fait deja le travail : SMAA
+    // par-dessus adoucirait les textures sans rien gagner sur les aretes.
+    p.smaa.enabled = haute && !this._msaa;
+
+    // La resolution est le levier le plus direct : chaque pixel se paie
+    // quatre fois dans le compositeur, dont les cibles sont en virgule
+    // flottante. En mode rapide on rend a un pixel pour un pixel d'ecran.
+    const ratio = haute ? Math.min(devicePixelRatio, 1.5) : 1;
+    // Chaque source allumee se paie sur chaque pixel de chaque objet : le
+    // budget d'eclairage est le premier levier quand la machine peine.
+    this.viewer.luminaires?.reglerBudget(haute ? 8 : 3);
+
+    /* L'ordre compte. Le compositeur calcule la taille de ses cibles à
+       partir de celle du rendu : changer l'un sans l'autre, ou dans le
+       mauvais ordre, laisse une image rendue au format précédent et
+       étirée au nouveau — un éclair de vue déformée au moment où la
+       qualité bascule. On pose donc l'écran, puis le compositeur, puis
+       on redimensionne une seule fois. */
+    const ratioEcran = haute ? Math.min(devicePixelRatio, 2) : 1;
+    if (this.viewer.renderer.getPixelRatio() !== ratioEcran || this._ratio !== ratio) {
+      this._ratio = ratio;
+      this.viewer.renderer.setPixelRatio(ratioEcran);
+      this._composer.setPixelRatio(ratio);
+      this.viewer.resize();
+    }
+    this.viewer.marquerOmbres();
   }
 
   desactiverPostTraitement() {
@@ -402,11 +480,11 @@ export class Rendu {
   rendre(forcer = false) {
     if (!this._composer) return false;
 
+    const immobile = forcer || performance.now() >= (this._bougeJusqua || 0);
+
     const ao = this._passes.ao;
-    if (ao) {
-      const immobile = forcer || performance.now() >= (this._bougeJusqua || 0);
-      ao.enabled = immobile && this.reglages.occlusion > 0.01;
-    }
+    if (ao) ao.enabled = immobile && this.reglages.occlusion > 0.01;
+
     this._composer.render();
     return true;
   }
@@ -418,7 +496,10 @@ export class Rendu {
 
     if (patch.environnement) this.appliquerEnvironnement(patch.environnement);
     if (patch.exposition !== undefined) this.viewer.renderer.toneMappingExposure = patch.exposition;
-    if (patch.ombres !== undefined || patch.sol !== undefined) this.majSol();
+    // majSol repose tout ce qui touche au sol : opacité, miroir, cadre d'ombre
+    if (patch.ombres !== undefined || patch.sol !== undefined || patch.reflets !== undefined) {
+      this.majSol();
+    }
     if (patch.reperes !== undefined) this.majReperes();
     if (patch.occlusion !== undefined || patch.bloom !== undefined || patch.qualite !== undefined) {
       this.majPostTraitement();
