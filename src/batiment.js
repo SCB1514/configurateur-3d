@@ -24,6 +24,16 @@ const MATERIAU_CADRE = new THREE.MeshStandardMaterial({ color: 0x5d4630, roughne
 const MATERIAU_VITRE = new THREE.MeshStandardMaterial({ color: 0xa8d8ea, roughness: 0.05, metalness: 0.2, transparent: true, opacity: 0.4 });
 // Poché du plan de coupe : les éléments coupés se remplissent de noir.
 const MATERIAU_SECTION = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide, depthTest: true });
+/* Surlignage du poche.
+
+   En plan, un mur selectionne ne peut pas se signaler par un contour : le
+   poche EST un aplat, et un liseré autour d'un aplat noir se perd. On
+   remplit donc la section elle-meme d'une couleur franche — c'est ce que
+   font les logiciels de plan, et cela se lit d'un coup d'oeil meme sur un
+   mur de cloison de sept centimetres. */
+const MATERIAU_SECTION_SEL = new THREE.MeshBasicMaterial({
+  color: 0x3d8bff, side: THREE.DoubleSide, depthTest: true,
+});
 // Proxy de tracé : rubans plats, sans lumière, pour dessiner à 60 i/s.
 const MATERIAU_PROXY = new THREE.MeshBasicMaterial({ color: 0x6ea8ff, side: THREE.DoubleSide, transparent: true, opacity: 0.55, depthWrite: false });
 const MATERIAU_PROXY_SEL = new THREE.MeshBasicMaterial({ color: 0xffb020, side: THREE.DoubleSide, transparent: true, opacity: 0.85, depthWrite: false });
@@ -914,7 +924,13 @@ export class Batiment {
   /** Affiche les poignées des nœuds d'un mur sélectionné (ou les masque). */
   setMurSelectionne(wallId) {
     this._murSel3D = wallId || null;
+    // repeindre suffit : reconstruire la section a chaque clic couterait une
+    // triangulation par mur pour un changement de couleur
+    for (const m of this._sectionGroup?.children || []) {
+      m.material = m.userData.wallId === this._murSel3D ? MATERIAU_SECTION_SEL : MATERIAU_SECTION;
+    }
     this._majPoignees();
+    this.viewer?.demanderImage?.(2);
   }
 
   _majPoignees() {
@@ -1117,7 +1133,11 @@ export class Batiment {
     for (const pts of this.graph.detectRooms()) this._dalle(pts);
     this._construireSection();
     // les murs 3D deviennent cliquables dans la sélection générale
-    this.viewer.selectables = this._murs3D;
+    /* En plan, ce sont les sections qu'on vise, pas les volumes : vu de
+       dessus un mur 3D n'offre que la tranche de son arete superieure. Les
+       deux jeux sont donc proposes au clic, et celui qui est visible
+       l'emporte naturellement puisque l'autre est masque. */
+    this.viewer.selectables = [...this._murs3D, ...(this._sectionGroup?.children || [])];
     this.viewer.marquerOmbres();
     this.viewer.demanderImage(2);
   }
@@ -1200,9 +1220,17 @@ export class Batiment {
         }
       }
       const geo = new THREE.ShapeGeometry(shape);
-      const mesh = new THREE.Mesh(geo, MATERIAU_SECTION);
+      const sel = this._murSel3D === w.id;
+      const mesh = new THREE.Mesh(geo, sel ? MATERIAU_SECTION_SEL : MATERIAU_SECTION);
       mesh.position.z = H;
       mesh.renderOrder = 2;
+      /* Le poche est cliquable, et c'est ce qui rend l'edition en plan
+         praticable : vu de dessus, le mur 3D se reduit a une arete de
+         quelques pixels, alors que sa section offre toute sa surface. */
+      mesh.userData.uid = w.id;
+      mesh.userData.wallId = w.id;
+      mesh.userData.batiment = true;
+      mesh.userData.section = true;
       this._sectionGroup.add(mesh);
     }
   }
