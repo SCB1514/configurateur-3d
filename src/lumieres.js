@@ -28,6 +28,52 @@ const DEG = Math.PI / 180;
 /** Émission vers le -Z local : un plafonnier non tourné éclaire le sol. */
 const AXE = new THREE.Vector3(0, 0, -1);
 
+/* ══════════════════ température de couleur ══════════════════ */
+
+/**
+ * Couleur d'un corps noir à une température donnée, en kelvins.
+ *
+ * Une lampe ne se décrit pas naturellement par un triplet rouge-vert-bleu :
+ * un éclairagiste parle de 2700 K pour une ampoule chaude, de 4000 K pour un
+ * néon de bureau, de 6500 K pour la lumière du jour. C'est la grandeur que
+ * portent les fiches produit, et celle qu'on retrouve d'un logiciel à l'autre.
+ *
+ * L'approximation est celle de Tanner Helland : elle suit la courbe de Planck
+ * de très près entre 1000 et 40000 K, pour trois logarithmes et rien d'autre.
+ */
+export function couleurDepuisKelvin(kelvin) {
+  const t = Math.max(1000, Math.min(40000, kelvin)) / 100;
+  let r, v, b;
+
+  if (t <= 66) {
+    r = 255;
+    v = 99.4708025861 * Math.log(t) - 161.1195681661;
+    b = t <= 19 ? 0 : 138.5177312231 * Math.log(t - 10) - 305.0447927307;
+  } else {
+    r = 329.698727446 * Math.pow(t - 60, -0.1332047592);
+    v = 288.1221695283 * Math.pow(t - 60, -0.0755148492);
+    b = 255;
+  }
+
+  const borne = (x) => Math.max(0, Math.min(255, Math.round(x)));
+  return new THREE.Color(borne(r) / 255, borne(v) / 255, borne(b) / 255);
+}
+
+/**
+ * La couleur effective d'un luminaire.
+ *
+ * La teinte explicite l'emporte par defaut, et c'est voulu : une
+ * bibliotheque decrit ses bandeaux par une couleur, pas par une temperature.
+ * Basculer sur la temperature sans qu'on l'ait demande repeindrait en blanc
+ * neutre tous les bandeaux colores deja publies.
+ */
+export function couleurLuminaire(spec) {
+  if (spec.parTemperature === true) {
+    return couleurDepuisKelvin(Number(spec.temperature) || 4000);
+  }
+  return new THREE.Color(spec.teinte || spec.couleur || '#ffffff');
+}
+
 /* ══════════════════ profils photométriques ══════════════════ */
 
 /**
@@ -110,7 +156,7 @@ export function construireLuminaire(spec, echelle = 1) {
   const g = new THREE.Group();
   g.userData.luminaire = true;
 
-  const couleur = new THREE.Color(spec.couleur || '#ffffff');
+  const couleur = couleurLuminaire(spec);
   const intensite = Number(spec.intensite) || 4;
   const eclat = Number(spec.eclat ?? Math.min(6, 1 + intensite * 0.4));
 
@@ -146,6 +192,14 @@ export function construireLuminaire(spec, echelle = 1) {
       geometrie = new THREE.CircleGeometry(rayon, 32);
       break;
     }
+    case 'point': {
+      // Une source ponctuelle n'a pas de face : on la figure par une petite
+      // sphere, qui rayonne dans toutes les directions comme elle.
+      const rayon = m(spec.rayon ?? 45);
+      largeur = hauteur = rayon * 2;
+      geometrie = new THREE.SphereGeometry(rayon, 16, 12);
+      break;
+    }
     default: {                                    // rectangle
       largeur = m(spec.taille?.[0] ?? 600);
       hauteur = m(spec.taille?.[1] ?? 600);
@@ -161,7 +215,9 @@ export function construireLuminaire(spec, echelle = 1) {
   const portee = m(spec.portee ?? 0);
   let source;
 
-  if (spec.type === 'bande' || spec.type === 'rectangle') {
+  if (spec.type === 'point') {
+    source = new THREE.PointLight(couleur, intensite * 3, portee, 1.8);
+  } else if (spec.type === 'bande' || spec.type === 'rectangle') {
     // Une source surfacique : c'est elle qui donne ces reflets allongés sur
     // le métal, qu'aucun point lumineux ne sait imiter.
     source = new THREE.RectAreaLight(couleur, intensite, largeur, hauteur);
@@ -183,8 +239,71 @@ export function construireLuminaire(spec, echelle = 1) {
 
   g.userData.source = source;
   g.userData.surface = surface;
-  g.userData.spec = spec;
+  /* Le panneau attend un jeu de reglages complet. Une bibliotheque n'en
+     fournit qu'une partie : on comble le reste avec les valeurs par defaut du
+     type, sans jamais ecraser ce qui a ete declare. */
+  g.userData.spec = { ...Luminaires.defaut(spec.type || 'rectangle'), ...spec,
+                      parTemperature: spec.parTemperature === true };
   return g;
+}
+
+/**
+ * Applique un jeu de réglages à un luminaire déjà en place.
+ *
+ * Tout ne se transpose pas d'un logiciel de rendu hors ligne au rendu
+ * temps réel, et il vaut mieux le dire que le maquiller :
+ *
+ *   — l'intensité en candelas n'a pas d'équivalent direct. On la ramène par
+ *     une division constante à l'échelle de three, ce qui conserve les
+ *     rapports entre appareils — le seul point qui compte à l'œil ;
+ *   — le rayon de source ne pilote la douceur d'ombre que sur les
+ *     projecteurs, seuls à porter une ombre ici ;
+ *   — les volets coupe-flux n'existent pas dans le rendu temps réel. On les
+ *     approche en rétrécissant la surface émettrice, ce qui resserre bien le
+ *     faisceau et réduit la diffusion latérale, sans reproduire la coupure
+ *     franche d'un vrai volet.
+ */
+export function appliquerReglages(g, patch, echelle = 1) {
+  const spec = Object.assign(g.userData.spec ||= {}, patch);
+  const source = g.userData.source;
+  const surface = g.userData.surface;
+  const m = (v) => (Number(v) || 0) * echelle;
+
+  const couleur = couleurLuminaire(spec);
+  const cd = Number(spec.intensite);
+  // 1200 cd correspond a peu pres a une intensite de 1 dans three : une
+  // ampoule domestique de 800 lumens tombe alors autour de l'unite.
+  const force = Number.isFinite(cd) ? cd / 1200 : 4;
+
+  if (surface) {
+    surface.material.emissive.copy(couleur);
+    surface.material.emissiveIntensity = Number(spec.eclat ?? Math.min(8, 1 + force * 0.5));
+    surface.visible = spec.actif !== false && spec.refletsVisibles !== false;
+    surface.material.needsUpdate = true;
+  }
+
+  if (source) {
+    source.color.copy(couleur);
+    if (source.isRectAreaLight) {
+      const fermeture = Math.cos((Number(spec.volets) || 0) * DEG);
+      const t = spec.taille || [];
+      if (t[0]) source.width = m(t[0]) * fermeture;
+      if (t[1]) source.height = m(t[1]) * fermeture;
+      source.intensity = force * 1.5;
+    } else {
+      source.intensity = force * (source.isSpotLight ? 4 : 3);
+      source.distance = m(spec.portee);
+      if (source.isSpotLight) {
+        if (Number.isFinite(spec.angleCone)) source.angle = spec.angleCone * DEG;
+        if (Number.isFinite(spec.penombre)) source.penumbra = spec.penombre;
+        source.castShadow = spec.ombres !== false;
+        // le rayon de source elargit la penombre : c'est la taille apparente
+        // de l'ampoule vue depuis le point eclaire
+        source.shadow.radius = Math.max(1, m(spec.rayonSource) * 40);
+      }
+    }
+  }
+  return spec;
 }
 
 /* ══════════════════ budget d'éclairage ══════════════════ */
@@ -198,6 +317,8 @@ export function construireLuminaire(spec, echelle = 1) {
  * combien — et le nuancier reste stable.
  */
 export class Luminaires {
+  static _compteur = 0;
+
   constructor(viewer) {
     this.viewer = viewer;
     this.groupes = new Set();
@@ -304,6 +425,103 @@ export class Luminaires {
     }
 
     if (change) this.viewer.marquerOmbres();
+  }
+
+  /* ══════════ l'API du panneau de gestion ══════════
+     Le panneau ne connait ni three ni la scene : il manipule des uid et des
+     objets de reglages. Tout ce qui suit est cette frontiere. */
+
+  /** Valeurs de depart d'un appareil qu'on vient de poser. */
+  static defaut(type) {
+    const commun = { type, actif: true, intensite: 6000, temperature: 4000,
+                     teinte: '#ffffff', parTemperature: true, rayonSource: 60,
+                     portee: 0, refletsVisibles: true, ombres: true,
+                     eclat: 3.4, pos: [0, 0, 2800], rot: [0, 0, 0] };
+    if (type === 'spot') return { ...commun, nom: 'Projecteur', rayon: 55, angleCone: 28, penombre: 0.3, portee: 12000 };
+    if (type === 'point') return { ...commun, nom: 'Ponctuelle', rayon: 45, portee: 8000 };
+    if (type === 'disque') return { ...commun, nom: 'Disque', rayon: 200, angleCone: 60, penombre: 0.6, portee: 10000 };
+    if (type === 'bande') return { ...commun, nom: 'Bandeau', taille: [1960, 22], volets: 0, voletsLongueur: 0 };
+    return { ...commun, nom: 'Panneau', type: 'rectangle', taille: [600, 600], volets: 0, voletsLongueur: 0 };
+  }
+
+  /** Pose un appareil libre, devant la camera, a hauteur de plafond. */
+  ajouter(type) {
+    const v = this.viewer;
+    const spec = Luminaires.defaut(type);
+    const echelle = v.lib?.scale ?? 1;
+
+    // devant le regard plutot qu'a l'origine : on pose ce que l'on vise
+    const cible = v.controls.target;
+    spec.pos = [cible.x / echelle, cible.y / echelle, 2800];
+
+    const g = construireLuminaire(spec, echelle);
+    g.userData.uid = 'lum-' + (++Luminaires._compteur);
+    g.userData.libre = true;
+    v.scene.add(g);
+    this.groupes.add(g);
+    this._preparerSurfaciques();
+    appliquerReglages(g, {}, echelle);
+    this.reglerBudget(this.budget);
+    v.marquerOmbres();
+    return g.userData.uid;
+  }
+
+  _trouver(uid) {
+    for (const g of this.groupes) if (g.userData.uid === uid) return g;
+    return null;
+  }
+
+  lister() {
+    const noms = { point: 'Ponctuelle', spot: 'Projecteur', bande: 'Bandeau',
+                   rectangle: 'Panneau', disque: 'Disque' };
+    return [...this.groupes].map(g => {
+      const s = g.userData.spec || {};
+      return { uid: g.userData.uid ||= 'lum-' + (++Luminaires._compteur),
+               nom: s.nom || noms[s.type] || 'Luminaire',
+               type: s.type || 'rectangle', actif: s.actif !== false,
+               libre: !!g.userData.libre };
+    });
+  }
+
+  lire(uid) {
+    const g = this._trouver(uid);
+    return g ? { ...(g.userData.spec || {}) } : null;
+  }
+
+  modifier(uid, patch) {
+    const g = this._trouver(uid);
+    if (!g) return;
+    const echelle = this.viewer.lib?.scale ?? 1;
+    appliquerReglages(g, patch, echelle);
+
+    // La position et l'orientation ne passent pas par appliquerReglages :
+    // elles portent sur le groupe, pas sur la source.
+    const s = g.userData.spec;
+    if (patch.pos) g.position.set(s.pos[0] * echelle, s.pos[1] * echelle, s.pos[2] * echelle);
+    if (patch.rot) g.rotation.set(s.rot[0] * DEG, s.rot[1] * DEG, s.rot[2] * DEG);
+    if (patch.actif !== undefined) { this._t = 0; this.arbitrer(); }
+
+    this.viewer.marquerOmbres();
+  }
+
+  supprimer(uid) {
+    const g = this._trouver(uid);
+    if (!g || !g.userData.libre) return false;    // un appareil d'un bloc se supprime avec lui
+    this.groupes.delete(g);
+    g.parent?.remove(g);
+    g.traverse(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
+    this.viewer.marquerOmbres();
+    return true;
+  }
+
+  /** Centre la vue sur un appareil, sans le perdre de vue. */
+  cadrer(uid) {
+    const g = this._trouver(uid);
+    if (!g) return;
+    const p = g.getWorldPosition(new THREE.Vector3());
+    const v = this.viewer;
+    const dir = v.camera.position.clone().sub(v.controls.target).normalize();
+    v._cadrer(p, p.clone().addScaledVector(dir, 4), true);
   }
 
   /** Le budget suit la qualité demandée. */

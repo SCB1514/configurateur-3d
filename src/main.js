@@ -2,6 +2,7 @@ import { loadLibrary, buildLibrary } from './library.js';
 import { DriveFolder, parseFolderId } from './drive.js';
 import { Viewer } from './viewer.js';
 import { ENVIRONNEMENTS } from './render.js';
+import { creerPanneauLumieres, CSS_PANNEAU_LUMIERES } from './panneau-lumieres.js';
 import { ThumbnailFactory } from './thumbnails.js';
 import { encodeState, decodeState, readHash, buildUrl } from './share.js';
 import { Plan } from './plan.js';
@@ -840,6 +841,54 @@ async function importSaves(file) {
    et n'ont donc rien à faire dans le lien de partage.
    ==================================================== */
 
+/* ══════════════════ gestion des lumières ══════════════════
+   Le panneau ne connaît ni three ni la scène : il manipule des identifiants
+   et des objets de réglages. Tout ce qui suit est cette frontière, et rien
+   d'autre — c'est ce qui permet de le remplacer sans toucher au moteur.
+   ============================================================ */
+
+function wireLumieres() {
+  // Le style du panneau voyage avec lui : un module d'interface qui dépend
+  // d'une feuille de style extérieure se casse dès qu'on le déplace.
+  const style = document.createElement('style');
+  style.textContent = CSS_PANNEAU_LUMIERES;
+  document.head.appendChild(style);
+
+  const hote = $('#light-panel');
+  let selection = null;
+
+  const panneau = creerPanneauLumieres(hote, {
+    lister: () => app.viewer.luminaires.lister(),
+    lire: (uid) => app.viewer.luminaires.lire(uid),
+    modifier: (uid, patch) => app.viewer.luminaires.modifier(uid, patch),
+    ajouter: (type) => {
+      const uid = app.viewer.luminaires.ajouter(type);
+      selection = uid;
+      toast('Appareil posé — placez-le avec la souris');
+      return uid;
+    },
+    supprimer: (uid) => {
+      if (!app.viewer.luminaires.supprimer(uid)) {
+        toast('Cet appareil appartient à un bloc : supprimez le bloc.', true);
+      } else if (selection === uid) selection = null;
+    },
+    selectionner: (uid) => { selection = uid; },
+    selection: () => selection,
+    cadrer: (uid) => app.viewer.luminaires.cadrer(uid),
+  });
+
+  const bascule = () => {
+    const cache = hote.classList.toggle('hidden');
+    $('#btn-lumieres').classList.toggle('on', !cache);
+    if (!cache) panneau.rafraichir();
+  };
+  $('#btn-lumieres').onclick = bascule;
+
+  // Poser ou retirer une machine change la liste : elle porte ses propres
+  // appareils, et l'utilisateur s'attend à les y retrouver.
+  app.rafraichirLumieres = () => { if (!hote.classList.contains('hidden')) panneau.rafraichir(); };
+}
+
 const CLE_RENDU = 'cfg3d:rendu';
 
 function wireRendu() {
@@ -1433,6 +1482,7 @@ function wireUI() {
 
   wirePlan();
   wireRendu();
+  wireLumieres();
 
   $('#preset-select').onchange = describePreset;
   $('#btn-preset-load').onclick = () => {

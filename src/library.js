@@ -267,6 +267,12 @@ export class Library {
         roughness: m.roughness ?? 0.72,
         paintable: !!m.paintable,
         ferme: maillageFerme(g),
+        ...Object.fromEntries(['clearcoat', 'clearcoatRoughness', 'iridescence',
+          'iridescenceIOR', 'iridescenceEpaisseur', 'sheen', 'sheenColor',
+          'sheenRoughness', 'transmission', 'thickness', 'ior', 'anisotropy',
+          'anisotropyRotation', 'specularIntensity', 'specularColor',
+          'attenuationColor', 'attenuationDistance']
+          .filter(k => m[k] !== undefined).map(k => [k, m[k]])),
         material: m.material || '',
         emissive: m.emissive || '',
         emissiveIntensite: m.emissiveIntensite ?? m.emissiveIntensity ?? 1.6,
@@ -464,6 +470,30 @@ export function buildStandardMaterial(part, couleur) {
   // sur le capot qui distingue une machine neuve d'un aplat de plastique.
   // Le matériau physique coûte plus cher à compiler : on ne le prend que là
   // où il change quelque chose.
+  /* Les matieres avancees, transmises telles quelles depuis la bibliotheque.
+
+     Ce sont elles qui separent une peinture de carrosserie d'un aplat
+     colore : le vernis qui glisse sur la tole, l'irisation d'un traitement
+     de surface, le duvet d'un tissu, la transmission d'un verre epais dont
+     la teinte se fonce avec l'epaisseur. three sait tout cela depuis la
+     matiere physique — encore faut-il lui passer les valeurs. */
+  const AVANCES = ['clearcoat', 'clearcoatRoughness', 'iridescence', 'iridescenceIOR',
+                   'sheen', 'sheenRoughness', 'transmission', 'thickness', 'ior',
+                   'anisotropy', 'anisotropyRotation', 'specularIntensity',
+                   'attenuationDistance'];
+  let physique = false;
+  const avances = {};
+  for (const cle of AVANCES) {
+    if (Number.isFinite(part[cle])) { avances[cle] = part[cle]; physique = true; }
+  }
+  for (const cle of ['sheenColor', 'attenuationColor', 'specularColor']) {
+    if (part[cle]) { avances[cle] = new THREE.Color(part[cle]); physique = true; }
+  }
+  if (part.iridescenceEpaisseur) {
+    avances.iridescenceThicknessRange = part.iridescenceEpaisseur;
+    physique = true;
+  }
+
   const laque = part.metalness < 0.5 && part.roughness < 0.55;
   if (laque) {
     Object.assign(options, {
@@ -483,8 +513,12 @@ export function buildStandardMaterial(part, couleur) {
     if (maps.emissiveMap) options.emissiveMap = maps.emissiveMap;
   }
 
-  const m = laque ? new THREE.MeshPhysicalMaterial(options)
-                  : new THREE.MeshStandardMaterial(options);
+  Object.assign(options, avances);
+  const m = (laque || physique) ? new THREE.MeshPhysicalMaterial(options)
+                                : new THREE.MeshStandardMaterial(options);
+  // Une matiere transmissive doit etre declaree transparente, sinon three la
+  // dessine dans la passe opaque et rien ne se voit au travers.
+  if (avances.transmission > 0) { m.transparent = true; m.depthWrite = false; }
   // Vector2 et scalaire : à poser après coup, le constructeur ne les convertit pas.
   if (maps.normalMap) m.normalScale.set(maps.normalScale, maps.normalScale);
   if (maps.bumpMap) m.bumpScale = maps.bumpScale;
@@ -495,7 +529,9 @@ export function buildStandardMaterial(part, couleur) {
 export function materialKey(part, couleur) {
   return [couleur || part.color, part.opacity, part.metalness, part.roughness,
     part.material || '', part.emissive || '', part.emissiveIntensite ?? '',
-    part.ferme ? 'F' : 'D'].join('|');
+    part.ferme ? 'F' : 'D',
+    part.clearcoat ?? '', part.iridescence ?? '', part.transmission ?? '',
+    part.sheen ?? '', part.anisotropy ?? '', part.ior ?? ''].join('|');
 }
 
 /** Construit une bibliothèque à partir d'un JSON déjà téléchargé. */
