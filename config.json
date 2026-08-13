@@ -5,6 +5,6 @@
   "priceNote": "Estimation indicative, hors installation et livraison.",
   "source": {
     "type": "static",
-    "library": "data/library.json"
+    "library": "data/library-crossfit.json"
   }
 }

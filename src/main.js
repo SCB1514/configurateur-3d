@@ -65,6 +65,8 @@ async function boot() {
       refreshRendu();
       toast(`Rendu allégé — ${fps} images/s en qualité haute`);
     },
+    onDimension: (axis, valeur, cx, cy) => editDimension(axis, valeur, cx, cy),
+    onGizmoValue: (tool, axe, cx, cy) => editGizmoValue(tool, axe, cx, cy),
   });
   app.viewer.setEditable(!app.viewonly);
   app.thumbs = new ThumbnailFactory(256);
@@ -89,7 +91,74 @@ async function boot() {
   }
   pushHistory(true);
   refreshAll();
+  // chargement automatique d'une disposition demandee par l'URL (?preset=id)
+  const presetUrl = params.get('preset');
+  if (presetUrl && !app.state.items.length && app.lib.presets?.some(p => p.id === presetUrl)) {
+    loadPreset(presetUrl);
+  }
+  // apercu des faisceaux force par l'URL (?apercu=1) — utile aux captures
+  if (params.get('apercu') === '1') app.viewer.luminaires.setApercu(true);
+  // diagnostic temporaire : double-clic sur une cote
+  if (params.get('test') === 'dbl') testDoubleClic();
   $('#loader').classList.add('hidden');
+}
+
+/** Diagnostic temporaire : simule un double-clic sur une cote avec de vrais
+ *  événements pointeur, et vérifie si le champ d'édition apparaît. */
+async function testDoubleClic() {
+  try {
+    const uids = [...(app.viewer.objects?.keys() || [])];
+    if (!uids.length) { document.title = 'DBL:aucun-objet'; return; }
+  app.showDims = true;
+  const v = app.viewer;
+  let cible = null;
+  for (const uid of uids) {
+    onSelect(uid);
+    await new Promise(r => setTimeout(r, 150));
+    const cotes = v.dimGroup?.userData?.cotes;
+    if (!cotes?.length) continue;
+    const r = v.canvas.getBoundingClientRect();
+    v.camera.updateMatrixWorld();
+    for (const c of cotes) {
+      const p = c.pos.clone().project(v.camera);
+      const cx = r.left + (p.x + 1) / 2 * r.width;
+      const cy = r.top + (1 - p.y) / 2 * r.height;
+      if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) {
+        cible = { uid, cote: c, cx, cy };
+        break;
+      }
+    }
+    if (cible) break;
+  }
+  if (!cible) { document.title = 'DBL:aucune-cote-visible'; return; }
+  window.__dimCalls = 0;
+  window.__coteHits = [];
+  window.__deltas = [];
+  const origCote = app.viewer.coteSous.bind(app.viewer);
+  app.viewer.coteSous = (ev) => { const r = origCote(ev); window.__coteHits.push(r); return r; };
+  const origHook = app.viewer.hooks.onDimension;
+  app.viewer.hooks.onDimension = (...a) => { window.__dimCalls++; return origHook(...a); };
+  const origUp = app.viewer._onUp.bind(app.viewer);
+  app.viewer._onUp = (ev) => {
+    const t = performance.now();
+    window.__deltas.push(Math.round(t - app.viewer._clic.t));
+    return origUp(ev);
+  };
+  const entre = (id) => {
+    v.canvas.dispatchEvent(new PointerEvent('pointerdown', {
+      clientX: cible.cx, clientY: cible.cy, button: 0, pointerId: id, bubbles: true, cancelable: true }));
+    v.canvas.dispatchEvent(new PointerEvent('pointerup', {
+      clientX: cible.cx, clientY: cible.cy, button: 0, pointerId: id, bubbles: true, cancelable: true }));
+  };
+  entre(1);
+  await new Promise(r => setTimeout(r, 60));
+  entre(2);
+  await new Promise(r => setTimeout(r, 400));
+  const inputs = document.querySelectorAll('body > input').length;
+  document.title = `DBL:cote=${cible.cote.axis}:dimCalls=${window.__dimCalls}:coteHits=${window.__coteHits.map(c => c ? c.axis : '-').join(',')}:deltas=${window.__deltas.join(',')}:inputs=${inputs}:sel=${app.selection.length}`;
+  } catch (e) {
+    document.title = 'DBL:ERREUR=' + String(e && e.message);
+  }
 }
 
 function fatal(e) {
@@ -888,6 +957,7 @@ function wireLumieres() {
     supprimerCalque: (id) => app.viewer.luminaires.supprimerCalque(id),
     basculerCalque: (id) => app.viewer.luminaires.basculerCalque(id),
     deplacerVers: (uid, id) => app.viewer.luminaires.deplacerVers(uid, id),
+    apercu: (on) => app.viewer.luminaires.setApercu(on),
   });
 
   const bascule = () => {
@@ -1338,6 +1408,110 @@ function refreshDimensions() {
   app.viewer.showDimensions(box, nom);
 }
 
+/**
+ * Édition d'une cote de la boîte englobante, au double-clic.
+ *
+ * Un champ de saisie flottant s'ouvre sur la cote cliquée, pré-rempli de sa
+ * valeur. Valider redimensionne la sélection le long de l'axe mesuré. L'unité
+ * affichée est celle de la bibliothèque ; la conversion en mètres revient au
+ * moteur.
+ */
+function editDimension(axis, valeur, cx, cy) {
+  if (app.viewonly) return;
+
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.min = '0';
+  input.step = app.lib.scale >= 1 ? '1' : '100';
+  input.value = valeur;
+  Object.assign(input.style, {
+    position: 'fixed', left: cx + 'px', top: cy + 'px', zIndex: '30',
+    width: '92px', transform: 'translate(-50%, -50%)',
+    padding: '5px 8px', fontSize: '13px', font: 'inherit',
+    background: 'var(--panel)', color: 'var(--txt)',
+    border: '1px solid var(--accent)', borderRadius: 'var(--radius)',
+    boxShadow: '0 4px 14px rgba(0,0,0,.4)', boxSizing: 'border-box',
+  });
+  document.body.appendChild(input);
+  input.focus();
+  input.select();
+
+  let fini = false;
+  const finir = (appliquer) => {
+    if (fini) return;
+    fini = true;
+    const val = Number(input.value);
+    input.remove();
+    if (!appliquer) return;
+    if (!(val > 0)) { toast('Cote invalide', true); return; }
+    app.viewer.resizeAxis(axis, val * app.lib.scale);
+    pushHistory();
+    refreshSelectionPanel();
+    refreshDimensions();
+    refreshAll();
+  };
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); finir(true); }
+    else if (e.key === 'Escape') finir(false);
+  });
+  input.addEventListener('blur', () => finir(true));
+}
+
+/**
+ * Saisie d'une valeur precise au clic sur un axe du gizmo. La valeur est un
+ * ECART depuis la position actuelle (0 par defaut) : taper 500 deplace de
+ * 500 mm le long de l'axe, taper -30 pivote de -30 degres.
+ */
+function editGizmoValue(tool, axe, cx, cy) {
+  if (app.viewonly) return;
+
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.step = 'any';
+  if (tool === 'translate') {
+    input.value = '0';
+    input.title = `${axe} — écart en ${app.lib.units}`;
+  } else if (tool === 'rotate') {
+    input.value = '0';
+    input.title = 'Rotation — écart en °';
+  } else {
+    input.value = '1';
+    input.min = '0.001';
+    input.title = 'Échelle (facteur)';
+  }
+  Object.assign(input.style, {
+    position: 'fixed', left: cx + 'px', top: cy + 'px', zIndex: '30',
+    width: '92px', transform: 'translate(-50%, -50%)',
+    padding: '5px 8px', fontSize: '13px', font: 'inherit',
+    background: 'var(--panel)', color: 'var(--txt)',
+    border: '1px solid var(--accent)', borderRadius: 'var(--radius)',
+    boxShadow: '0 4px 14px rgba(0,0,0,.4)', boxSizing: 'border-box',
+  });
+  document.body.appendChild(input);
+  input.focus();
+  input.select();
+
+  let fini = false;
+  const finir = (ok) => {
+    if (fini) return;
+    fini = true;
+    const val = Number(input.value);
+    input.remove();
+    if (!ok || Number.isNaN(val)) return;
+    if (tool === 'translate') app.viewer.applyGizmoAxis(axe, val * app.lib.scale);
+    else if (tool === 'rotate') app.viewer.applyGizmoAxis(axe, val);
+    else app.viewer.applyGizmoAxis(axe, Math.max(0.001, val));
+    pushHistory();
+    refreshSelectionPanel();
+    refreshDimensions();
+  };
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); finir(true); }
+    else if (e.key === 'Escape') finir(false);
+  });
+  input.addEventListener('blur', () => finir(true));
+}
+
 function refreshSelectionPanel() {
   const box = $('#selection-box');
   const it = find(app.selected);
@@ -1651,6 +1825,7 @@ function wireUI() {
     else if (k === 'd') duplicateSelected();
     else if (k === 'f') app.viewer.fit();
     else if (k === 'g') $('[data-tool="translate"]').click();
+    else if (k === 's') $('[data-tool="scale"]').click();
     else if (k === 'r') {
       if (app.viewer.ghost) app.viewer.rotateGhost(e.shiftKey ? -90 : 90);
       else {

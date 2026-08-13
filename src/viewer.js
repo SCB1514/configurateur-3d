@@ -220,9 +220,12 @@ export class Viewer {
 
     /* ---------- interaction ---------- */
     this.ray = new THREE.Raycaster();
+    // les cotes sont des sprites : leur raycast exige la camera de reference
+    this.ray.camera = this.camera;
     this.pointer = new THREE.Vector2();
     this._plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
     this._down = null;
+    this._clic = { t: 0, x: 0, y: 0 };
     canvas.addEventListener('pointerdown', e => this._onDown(e));
     canvas.addEventListener('pointermove', e => this._onMove(e));
     canvas.addEventListener('pointerup', e => this._onUp(e));
@@ -539,8 +542,9 @@ export class Viewer {
   _applyTransform(obj, item, block) {
     obj.position.set(item.pos[0], item.pos[1], item.pos[2] + (block?.baseOffset || 0));
     obj.rotation.set(0, 0, (item.rot || 0) * DEG);
-    const s = item.scale || 1;
-    obj.scale.set(s, s, s);
+    const s = item.scale;
+    if (Array.isArray(s)) obj.scale.set(s[0] || 1, s[1] || 1, s[2] || 1);
+    else { const v = s || 1; obj.scale.set(v, v, v); }
     obj.userData.finish = item.finish;
     obj.userData.color = item.color;
     this.marquerOmbres();
@@ -561,6 +565,17 @@ export class Viewer {
       return;
     }
     const block = this.lib.block(obj.userData.blockId);
+
+    // Échelle : le gizmo tire un axe à la fois, mais le modèle reste
+    // uniforme. On repère l'axe qui a bougé et on y ramène les deux autres —
+    // ainsi la machine grandit ou rapetisse sans se déformer.
+    if (this.tool === 'scale') {
+      const x = obj.scale.x, y = obj.scale.y, z = obj.scale.z;
+      const ref = this._scaleRef ?? x;
+      const s = Math.abs(x - ref) > 1e-6 ? x : (Math.abs(y - ref) > 1e-6 ? y : z);
+      obj.scale.set(s, s, s);
+      this._scaleRef = s;
+    }
 
     // Déplacement de groupe.
     //
@@ -595,6 +610,7 @@ export class Viewer {
     this.hooks.onTransform?.(obj.userData.uid, {
       pos: [r4(obj.position.x), r4(obj.position.y), r4(z)],
       rot: r4(obj.rotation.z / DEG),
+      scale: r4(obj.scale.x),
     });
   }
 
@@ -667,6 +683,8 @@ export class Viewer {
     this.gizmo.setMode(tool);
     if (tool === 'rotate') { this.gizmo.showX = false; this.gizmo.showY = false; this.gizmo.showZ = true; }
     else { this.gizmo.showX = this.gizmo.showY = this.gizmo.showZ = true; }
+    // référence de l'échelle uniforme au moment où l'on passe en échelle
+    if (tool === 'scale') this._scaleRef = this.selected?.scale.x ?? 1;
   }
 
   setSnap(on) {
@@ -993,11 +1011,36 @@ export class Viewer {
   }
 
   _onDown(ev) {
+    if (ev.button !== 0) return;            // clic droit : voir contextmenu (main.js)
     this._vol = null;                       // la main de l'utilisateur prime sur un vol de camera
+
+    // Edition du faisceau : l'apercu est actif et une poignee est sous le
+    // curseur. On saisit la poignee plutot que d'orbitter ou de selectionner.
+    if (this.luminaires?.apercuActif) {
+      this._setPointer(ev);
+      const poignee = this.luminaires.poigneeSous(this.pointer, this.camera);
+      if (poignee) {
+        this._beam = poignee;
+        this.controls.enabled = false;
+        this.demanderImage(2);
+        return;
+      }
+    }
+
     this._down = { x: ev.clientX, y: ev.clientY, t: performance.now() };
+    // Poignee du gizmo sous le curseur, capturee AU pointerdown : le listener
+    // pointerup de TransformControls (attache avant le notre) remet
+    // `this.gizmo.axis` a null, donc c'est au down qu'il faut la lire.
+    this._clicAxe = /^[XYZ]$/.test(this.gizmo.axis) ? this.gizmo.axis : null;
   }
 
   _onMove(ev) {
+    if (this._beam) {
+      this._setPointer(ev);
+      this.luminaires?.editerFaisceau(this._beam.g, this._beam.type, this.pointer, this.camera);
+      this.demanderImage(2);
+      return;
+    }
     if (!this.ghost) return;
     this.demanderImage(2);
     const p = this._dropPoint(ev);
@@ -1028,10 +1071,16 @@ export class Viewer {
   }
 
   _onUp(ev) {
+    if (this._beam) {
+      this._beam = null;
+      this.controls.enabled = true;
+      this.luminaires?.finEdition?.();
+      return;
+    }
+    if (ev.button !== 0) return;            // clic droit : voir contextmenu (main.js)
     const d = this._down; this._down = null;
     if (!d) return;
     if (Math.hypot(ev.clientX - d.x, ev.clientY - d.y) > 5) return;   // orbite, pas un clic
-    if (this.gizmo.dragging) return;
 
     if (this.ghost) {
       const p = this._dropPoint(ev);
@@ -1056,10 +1105,81 @@ export class Viewer {
     if (this.editable === false) return;
     this._setPointer(ev);
     this.ray.setFromCamera(this.pointer, this.camera);
+
+    // Clic franc sur une poignee du gizmo : ouvre la saisie de valeur precise.
+    // L'axe a ete capture au pointerdown (`_clicAxe`), car TransformControls
+    // remet `this.gizmo.axis` a null sur son propre pointerup, avant le notre.
+    if (this._clicAxe) {
+      const axe = this._clicAxe;
+      this._clicAxe = null;
+      this.hooks.onGizmoValue?.(this.tool, axe, ev.clientX, ev.clientY);
+      return;
+    }
+
+    // Double-clic sur une cote : edition de la dimension. La cote est trouvee
+    // en 2D (projection a l'ecran), plus fiable que le raycast des sprites.
+    const maintenant = performance.now();
+    const double = (maintenant - this._clic.t) < 350
+      && Math.abs(ev.clientX - this._clic.x) < 6
+      && Math.abs(ev.clientY - this._clic.y) < 6;
+    this._clic = { t: maintenant, x: ev.clientX, y: ev.clientY };
+    const cote = this.coteSous(ev);
+    if (double && cote) {
+      this.hooks.onDimension?.(cote.axis, cote.valeur, ev.clientX, ev.clientY);
+      return;
+    }
+
+    // Un clic sur une cote ne doit pas changer la sélection.
+    if (cote) return;
     const hits = this.ray.intersectObjects(this._cibles(), true);
     const additif = ev.ctrlKey || ev.shiftKey || ev.metaKey;
     if (hits.length) this.select(rootOf(hits[0].object, this.scene).userData.uid, additif);
     else if (!additif) this.select(null);
+  }
+
+  /**
+   * Applique un déplacement relatif le long d'un axe du gizmo : la valeur
+   * saisie est un écart depuis la position actuelle, pas une position absolue.
+   */
+  applyGizmoAxis(axe, valeur) {
+    const obj = this.selected;
+    if (!obj) return;
+    if (this.tool === 'translate') {
+      const i = 'XYZ'.indexOf(axe);
+      if (i < 0) return;
+      obj.position.setComponent(i, obj.position.getComponent(i) + valeur);
+    } else if (this.tool === 'rotate') {
+      obj.rotation.z += valeur * DEG;
+    } else if (this.tool === 'scale') {
+      obj.scale.set(valeur, valeur, valeur);
+    }
+    this._readTransform();
+    this.hooks.onCommit?.();
+  }
+
+  /**
+   * Redimensionne la sélection le long d'un axe, autour de l'origine de chaque
+   * objet. `targetWorld` est la cote visée en mètres. Renvoie la taille réelle
+   * obtenue, ou null si impossible.
+   */
+  resizeAxis(axis, targetWorld) {
+    const b = this.boundsOf(this.selection);
+    if (!b || !(targetWorld > 0)) return null;
+    const courante = b.getSize(new THREE.Vector3()).getComponent(axis);
+    if (courante < 1e-6) return null;
+    const facteur = targetWorld / courante;
+    if (Math.abs(facteur - 1) < 1e-6) return targetWorld;
+
+    for (const uid of this.selection) {
+      const obj = this.objects.get(uid);
+      if (!obj) continue;
+      const s = obj.scale.clone();
+      s.setComponent(axis, Math.max(0.001, s.getComponent(axis) * facteur));
+      obj.scale.copy(s);
+      this.hooks.onTransform?.(uid, { scale: [r4(obj.scale.x), r4(obj.scale.y), r4(obj.scale.z)] });
+    }
+    this.marquerOmbres();
+    return targetWorld;
   }
 
   /* ══════════ points d'accroche visibles ══════════
@@ -1130,17 +1250,51 @@ export class Viewer {
     // Chaque cote connaît le segment qu'elle mesure : l'étiquette s'orientera
     // dessus à l'écran, comme une cote de plan, au lieu de rester horizontale.
     const cotes = [
-      [`${n(size.x)} ${unite}`, new THREE.Vector3(min.x, min.y, min.z), new THREE.Vector3(max.x, min.y, min.z)],
-      [`${n(size.y)} ${unite}`, new THREE.Vector3(max.x, min.y, min.z), new THREE.Vector3(max.x, max.y, min.z)],
-      [`${n(size.z)} ${unite}`, new THREE.Vector3(max.x, min.y, min.z), new THREE.Vector3(max.x, min.y, max.z)],
+      [`${n(size.x)} ${unite}`, new THREE.Vector3(min.x, min.y, min.z), new THREE.Vector3(max.x, min.y, min.z), 0],
+      [`${n(size.y)} ${unite}`, new THREE.Vector3(max.x, min.y, min.z), new THREE.Vector3(max.x, max.y, min.z), 1],
+      [`${n(size.z)} ${unite}`, new THREE.Vector3(max.x, min.y, min.z), new THREE.Vector3(max.x, min.y, max.z), 2],
     ];
 
-    for (const [texte, a, b] of cotes) this.dimGroup.add(this._label(texte, a, b));
+    for (const [texte, a, b, axis] of cotes) {
+      const sprite = this._label(texte, a, b);
+      // Une cote se retient pour pouvoir être éditée : l'axe qu'elle mesure
+      // et la valeur affichée, dans l'unité de la bibliothèque.
+      sprite.userData.axis = axis;
+      sprite.userData.valeur = n([size.x, size.y, size.z][axis]);
+      this.dimGroup.add(sprite);
+    }
+    // Position monde de chaque cote, pour la détection au clic en 2D (plus
+    // fiable que le raycast des sprites).
+    this.dimGroup.userData.cotes = cotes.map(([, a, b, axis]) => ({
+      axis,
+      valeur: n([size.x, size.y, size.z][axis]),
+      pos: a.clone().add(b).multiplyScalar(0.5),
+    }));
     if (label) {
       const haut = new THREE.Vector3((min.x + max.x) / 2, (min.y + max.y) / 2, max.z);
       this.dimGroup.add(this._label(label, haut, null));
     }
     this.scene.add(this.dimGroup);
+  }
+
+  /**
+   * La cote sous le curseur, trouvée en projetant sa position à l'écran :
+   * un test de distance 2D, indépendant du raycast des sprites.
+   */
+  coteSous(ev, tol = 18) {
+    const cotes = this.dimGroup?.userData?.cotes;
+    if (!cotes?.length || !this.dimGroup?.visible) return null;
+    const r = this.canvas.getBoundingClientRect();
+    const x = ev.clientX - r.left, y = ev.clientY - r.top;
+    let meilleure = null;
+    for (const c of cotes) {
+      const p = c.pos.clone().project(this.camera);
+      const px = ((p.x + 1) / 2) * r.width;
+      const py = ((1 - p.y) / 2) * r.height;
+      const d = Math.hypot(px - x, py - y);
+      if (d <= tol && (!meilleure || d < meilleure.d)) meilleure = { ...c, d };
+    }
+    return meilleure;
   }
 
   clearDimensions() {

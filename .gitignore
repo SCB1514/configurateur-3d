@@ -18,3 +18,13 @@ desktop.ini
 # exports temporaires
 *-composition.json
 *-configuration.png
+
+# Textures sous licence tierce (Architextures et assimiles).
+#
+# Leurs conditions interdisent expressement de republier les images
+# telechargees sur un autre site : « You are not permitted to publish images
+# downloaded from Architextures on another website without prior permission ».
+# Or ce depot est publie sur GitHub Pages, et tout ce qu'il contient part avec
+# lui. Les fichiers restent donc locaux, et l'application se rabat sur ses
+# textures fabriquees quand ils sont absents.
+data/textures/

@@ -237,14 +237,110 @@ export function construireLuminaire(spec, echelle = 1) {
   source.visible = false;                 // c'est le budget qui allume, pas nous
   g.add(source);
 
+  // L'apercu filaire du faisceau (cone, sphere ou nappe), masque par defaut.
+  // Il suit le groupe : deplacement, rotation et echelle s'appliquent a lui.
+  const apercu = construireApercu(source);
+  g.add(apercu);
+
   g.userData.source = source;
   g.userData.surface = surface;
+  g.userData.apercu = apercu;
   /* Le panneau attend un jeu de reglages complet. Une bibliotheque n'en
      fournit qu'une partie : on comble le reste avec les valeurs par defaut du
      type, sans jamais ecraser ce qui a ete declare. */
   g.userData.spec = { ...Luminaires.defaut(spec.type || 'rectangle'), ...spec,
                       parTemperature: spec.parTemperature === true };
   return g;
+}
+
+/**
+ * Aperçu filaire de l'étendue d'un luminaire : le cône d'un projecteur, la
+ * sphère d'une source ponctuelle, ou la nappe d'une source surfacique.
+ *
+ * C'est une aide à la pose, pas une simulation photométrique : on dessine la
+ * portée nominale (ou un repli raisonnable quand elle est illimitée), telle
+ * que la source la déclare. Les dimensions vivent dans l'espace local du
+ * groupe — le même que celui de la source — pour que l'aperçu suive la
+ * transformation de l'appareil sans recalcul.
+ */
+function construireApercu(source) {
+  const holder = new THREE.Group();
+  holder.userData.apercu = true;
+  holder.userData.poignees = [];
+
+  const trait = new THREE.LineBasicMaterial({
+    color: 0xffc53d, transparent: true, opacity: 0.5,
+    depthTest: false, depthWrite: false,
+  });
+  // la poignee (l'extremite saisissable) est plus vive : c'est elle qu'on tire
+  const traitPoignee = new THREE.LineBasicMaterial({
+    color: 0xffd98a, transparent: true, opacity: 0.95,
+    depthTest: false, depthWrite: false,
+  });
+
+  const marquer = (o, type) => {
+    o.userData.apType = type;
+    holder.userData.poignees.push(o);
+    holder.add(o);
+    return o;
+  };
+
+  if (source.isPointLight) {
+    // sphere d'illumination : on tire sa surface pour changer la portee
+    const r = source.distance || 4;
+    marquer(new THREE.Mesh(
+      new THREE.SphereGeometry(r, 24, 16),
+      new THREE.MeshBasicMaterial({
+        color: 0xffc53d, wireframe: true, transparent: true,
+        opacity: 0.26, depthTest: false, depthWrite: false,
+      })), 'sphere');
+  } else if (source.isRectAreaLight) {
+    // nappe emissive : un rectangle qui materialise la surface
+    const w = source.width / 2, h = source.height / 2;
+    const coins = [
+      new THREE.Vector3(-w, -h, 0), new THREE.Vector3(w, -h, 0),
+      new THREE.Vector3(w, h, 0), new THREE.Vector3(-w, h, 0),
+    ];
+    holder.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(coins), traitPoignee));
+    const nappe = new THREE.Mesh(
+      new THREE.PlaneGeometry(source.width, source.height),
+      new THREE.MeshBasicMaterial({
+        color: 0xffc53d, transparent: true, opacity: 0.14,
+        side: THREE.DoubleSide, depthTest: false, depthWrite: false,
+      }));
+    marquer(nappe, 'rect');
+  } else {
+    // cone d'illumination : sommet a l'appareil, base a la portee.
+    // La base est la poignee : on la tire pour regler portee et angle.
+    const dist = source.distance || 5;
+    const rayon = Math.tan((source.angle || 0.5) / 2) * dist;
+    const cercle = [];
+    for (let i = 0; i <= 48; i++) {
+      const a = (i / 48) * Math.PI * 2;
+      cercle.push(new THREE.Vector3(Math.cos(a) * rayon, Math.sin(a) * rayon, -dist));
+    }
+    holder.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(cercle), traitPoignee));
+    // un disque semi-transparent a la base : bien plus facile a saisir qu'une
+    // ligne, et il figure la tache de lumiere au sol
+    const disque = new THREE.Mesh(
+      new THREE.CircleGeometry(rayon, 48),
+      new THREE.MeshBasicMaterial({
+        color: 0xffc53d, transparent: true, opacity: 0.14,
+        side: THREE.DoubleSide, depthTest: false, depthWrite: false,
+      }));
+    disque.rotation.x = Math.PI;
+    disque.position.z = -dist;
+    marquer(disque, 'cone');
+    const rayons = [];
+    for (let i = 0; i < 48; i += 6) rayons.push(new THREE.Vector3(0, 0, 0), cercle[i]);
+    holder.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(rayons), trait));
+  }
+
+  // L'apercu ne capte jamais un clic normal ; la poignee ne redevient
+  // saisissable que pendant l'apercu (voir setApercu).
+  holder.traverse(o => { o.userData._raycast = o.raycast; o.raycast = () => {}; });
+  holder.visible = false;
+  return holder;
 }
 
 /**
@@ -445,17 +541,22 @@ export class Luminaires {
      Le panneau ne connait ni three ni la scene : il manipule des uid et des
      objets de reglages. Tout ce qui suit est cette frontiere. */
 
-  /** Valeurs de depart d'un appareil qu'on vient de poser. */
+  /** Valeurs de depart d'un appareil qu'on vient de poser.
+      Ce sont des ordres de grandeur credibles, pas des valeurs de catalogue :
+      un projecteur de salle fait quelques milliers de candelas et ouvre ~30°,
+      une ampoule ponctuelle quelques centaines, une dalle ou un downlight
+      quelques milliers. La portee par defaut amene le cone jusqu'au sol (la
+      pose se fait a 2,80 m), pour que l'apercu pointe bien « jusqu'au plan 0 ». */
   static defaut(type) {
-    const commun = { type, actif: true, intensite: 6000, temperature: 4000,
+    const commun = { type, actif: true, intensite: 2500, temperature: 4000,
                      teinte: '#ffffff', parTemperature: true, rayonSource: 60,
                      portee: 0, refletsVisibles: true, ombres: true,
-                     eclat: 3.4, pos: [0, 0, 2800], rot: [0, 0, 0] };
-    if (type === 'spot') return { ...commun, nom: 'Projecteur', rayon: 55, angleCone: 28, penombre: 0.3, portee: 12000 };
-    if (type === 'point') return { ...commun, nom: 'Ponctuelle', rayon: 45, portee: 8000 };
-    if (type === 'disque') return { ...commun, nom: 'Disque', rayon: 200, angleCone: 60, penombre: 0.6, portee: 10000 };
-    if (type === 'bande') return { ...commun, nom: 'Bandeau', taille: [1960, 22], volets: 0, voletsLongueur: 0 };
-    return { ...commun, nom: 'Panneau', type: 'rectangle', taille: [600, 600], volets: 0, voletsLongueur: 0 };
+                     eclat: 3.2, pos: [0, 0, 2800], rot: [0, 0, 0] };
+    if (type === 'spot') return { ...commun, nom: 'Projecteur', intensite: 4200, rayon: 55, angleCone: 30, penombre: 0.35, portee: 2800 };
+    if (type === 'point') return { ...commun, nom: 'Ponctuelle', intensite: 900, rayon: 45, portee: 0 };
+    if (type === 'disque') return { ...commun, nom: 'Disque', intensite: 2600, rayon: 200, angleCone: 60, penombre: 0.6, portee: 2800 };
+    if (type === 'bande') return { ...commun, nom: 'Bandeau', intensite: 1600, taille: [1200, 24], volets: 0, voletsLongueur: 0 };
+    return { ...commun, nom: 'Panneau', type: 'rectangle', intensite: 2800, taille: [600, 600], volets: 0, voletsLongueur: 0 };
   }
 
   /** Pose un appareil libre, devant la camera, a hauteur de plafond. */
@@ -621,6 +722,9 @@ export class Luminaires {
         || patch.refletsVisibles !== undefined) this._appliquerVisibilite(g);
     if (patch.actif !== undefined) { this._t = 0; this.arbitrer(); }
 
+    // angle, portee ou taille ont pu changer : l'aperçu doit suivre
+    if (this._apercu) this.rafraichirApercu(g);
+
     this.viewer.marquerOmbres();
   }
 
@@ -695,6 +799,108 @@ export class Luminaires {
     this.budget = Math.max(0, n | 0);
     this._t = 0;
     this.arbitrer();
+  }
+
+  /**
+   * Affiche ou masque l'aperçu filaire de tous les faisceaux.
+   *
+   * L'aperçu est reconstruit à l'ouverture : angle, portée et taille ont pu
+   * changer depuis la dernière fois. Une fois affiché, il suit le groupe
+   * (déplacement, rotation, échelle) sans autre intervention.
+   */
+  setApercu(on) {
+    this._apercu = !!on;
+    for (const g of this.groupes) {
+      if (!g.userData.apercu) continue;
+      if (on) this.rafraichirApercu(g);
+      g.userData.apercu.visible = on;
+      // la poignee ne redevient saisissable que pendant l'apercu
+      for (const p of g.userData.apercu.userData.poignees || []) {
+        p.raycast = on ? (p.userData._raycast || (() => {})) : (() => {});
+      }
+    }
+    this.viewer.demanderImage(2);
+  }
+
+  get apercuActif() { return !!this._apercu; }
+
+  /**
+   * La poignee d'apercu sous le curseur, ou null.
+   * Appele par le viewer au pointerdown, uniquement quand l'apercu est actif.
+   */
+  poigneeSous(pointer, camera) {
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(pointer, camera);
+    ray.params.Line = { threshold: 0.35 };      // une ligne est dure a saisir
+    ray.params.Points = { threshold: 0.35 };
+    for (const g of this.groupes) {
+      const ap = g.userData.apercu;
+      if (!ap?.visible) continue;
+      const hits = ray.intersectObjects(ap.userData.poignees || [], false);
+      if (hits.length) return { g, type: hits[0].object.userData.apType };
+    }
+    return null;
+  }
+
+  /**
+   * Edite le faisceau en tirant sa poignee : la base du cone (portee + angle),
+   * la sphere (portee) ou la nappe (taille). Le calcul se fait dans le repere
+   * local du groupe, le meme que celui de la source.
+   */
+  editerFaisceau(g, type, pointer, camera) {
+    const source = g.userData.source;
+    const echelle = this.viewer.lib?.scale ?? 1;
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(pointer, camera);
+
+    const inv = new THREE.Matrix4().copy(g.matrixWorld).invert();
+    const rayLocal = ray.ray.clone().applyMatrix4(inv);
+    const p = new THREE.Vector3();
+
+    if (type === 'sphere') {
+      const monde = new THREE.Vector3();
+      g.getWorldPosition(monde);
+      const regard = camera.getWorldDirection(new THREE.Vector3()).normalize();
+      const plan = new THREE.Plane().setFromNormalAndCoplanarPoint(regard, monde);
+      if (!ray.ray.intersectPlane(plan, p)) return;
+      const r = Math.max(0.1, p.distanceTo(monde));
+      appliquerReglages(g, { portee: r / echelle }, echelle);
+    } else if (type === 'rect') {
+      const plan = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+      if (!rayLocal.intersectPlane(plan, p)) return;
+      const w = Math.max(0.05, Math.abs(p.x) * 2);
+      const h = Math.max(0.05, Math.abs(p.y) * 2);
+      appliquerReglages(g, { taille: [w / echelle, h / echelle] }, echelle);
+    } else {
+      // cone : la base est sur le plan z = -portee, dans le repere local
+      const d = source.distance || 5;
+      const plan = new THREE.Plane(new THREE.Vector3(0, 0, 1), d);
+      if (!rayLocal.intersectPlane(plan, p)) return;
+      const dist = Math.max(0.1, -p.z);
+      const rayon = Math.hypot(p.x, p.y);
+      const angle = Math.max(1, 2 * Math.atan2(rayon, dist) / DEG);
+      appliquerReglages(g, { portee: dist / echelle, angleCone: angle }, echelle);
+    }
+
+    this.rafraichirApercu(g);
+    this.viewer.marquerOmbres();
+  }
+
+  finEdition() {
+    // la liste et le formulaire refletent les nouvelles valeurs
+    this.viewer.hooks.onLuminaire?.();
+  }
+
+  /** Reconstruit l'aperçu d'un appareil d'après l'état réel de sa source. */
+  rafraichirApercu(g) {
+    const ancien = g.userData.apercu;
+    if (ancien) g.remove(ancien);
+    const source = g.userData.source;
+    if (!source) return;
+    const ap = construireApercu(source);
+    ap.visible = this._apercu === true;
+    g.add(ap);
+    g.userData.apercu = ap;
   }
 
   get compte() { return this.groupes.size; }

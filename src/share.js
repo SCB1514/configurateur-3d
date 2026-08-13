@@ -41,7 +41,13 @@ function pack(state) {
   };
   const items = state.items.map(it => {
     const row = [idx(it.blockId), it.pos[0], it.pos[1], it.pos[2], it.rot || 0];
-    if (it.finish) row.push(it.finish);
+    const ech = it.scale;
+    const aEchelle = ech != null && ech !== 1
+      && !(Array.isArray(ech) && ech.every(v => v === 1));
+    if (it.finish || aEchelle) {
+      row.push(it.finish || null);
+      if (aEchelle) row.push(ech);
+    }
     return row;
   });
   const out = { v: 1, p: palette, i: items };
@@ -62,6 +68,7 @@ function unpack(o) {
       pos: [row[1] || 0, row[2] || 0, row[3] || 0],
       rot: row[4] || 0,
       finish: row[5] || null,
+      scale: row[6] != null ? row[6] : 1,
     })).filter(it => it.blockId),
   };
 }

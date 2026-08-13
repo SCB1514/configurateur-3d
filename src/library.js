@@ -1,5 +1,6 @@
 import * as THREE from '../vendor/three/three.module.js';
 import { BLOCS_LUMIERE, MATIERES_LUMIERE } from './catalogue-lumieres.js';
+import { texturesProcedurales } from './textures-procedurales.js';
 
 /* ============================================================
    Chargement de la bibliothèque de blocs (export Rhino)
@@ -159,7 +160,29 @@ export class Library {
     if (!base) {
       this._pendingTextures++;
       base = this.loader.load(url, () => this._textureDone(), undefined, () => {
-        console.warn('Texture illisible :', url.slice(0, 80));
+        /* Repli sur une texture fabriquee.
+
+           Les images de texture d'architecture sont sous licence : celles
+           qu'on telecharge pour travailler ne peuvent pas etre republiees
+           avec l'application. Elles restent donc sur le poste, hors du
+           depot, et manquent forcement au site en ligne.
+
+           Plutot qu'un materiau nu — un aplat gris la ou l'on attendait du
+           chene — on fabrique une matiere approchante d'apres le nom du
+           fichier. Le rendu reste juste, personne ne republie rien, et
+           l'auteur qui a la licence voit ses vraies images en local. */
+        const substitut = matiereApprochante(url);
+        if (substitut) {
+          const cartes = texturesProcedurales(substitut, '#ffffff');
+          if (cartes?.couleur?.image) {
+            base.image = cartes.couleur.image;
+            base.needsUpdate = true;
+            console.info(`Texture absente, remplacee par « ${substitut} » fabrique :`,
+                         url.split('/').pop());
+          }
+        } else {
+          console.warn('Texture illisible :', url.slice(0, 80));
+        }
         this._textureDone();
       });
       base.wrapS = base.wrapT = THREE.RepeatWrapping;
@@ -285,6 +308,8 @@ export class Library {
         roughness: m.roughness ?? 0.72,
         paintable: !!m.paintable,
         ferme: maillageFerme(g),
+        texture: m.texture || '',
+        textureEchelle: Number(m.textureEchelle) > 0 ? Number(m.textureEchelle) : 1,
         ...Object.fromEntries(['clearcoat', 'clearcoatRoughness', 'iridescence',
           'iridescenceIOR', 'iridescenceEpaisseur', 'sheen', 'sheenColor',
           'sheenRoughness', 'transmission', 'thickness', 'ior', 'anisotropy',
@@ -432,6 +457,23 @@ function projectUV(geometry, taille) {
  * exactement deux triangles. Le test est lineaire, fait une fois au
  * chargement, et son resultat vaut pour toutes les copies du bloc.
  */
+/**
+ * Devine la matiere a fabriquer d'apres le nom d'un fichier de texture.
+ *
+ * Le nom porte l'intention : « chene », « parquet-wenge », « beton-basalte ».
+ * C'est grossier, mais c'est exactement ce qu'il faut ici — on ne cherche pas
+ * a reproduire l'image, on cherche a ne pas afficher un aplat gris a sa place.
+ */
+function matiereApprochante(url) {
+  const nom = String(url).split('/').pop().toLowerCase();
+  if (/bois|chene|parquet|wenge|teck|noyer|brule|redwood|oak|wood/.test(nom)) return 'bois';
+  if (/beton|concrete|basalte|pierre|stone|ciment|resine/.test(nom)) return 'beton';
+  if (/caoutchouc|rubber|tapis|sol-sport|gomme/.test(nom)) return 'caoutchouc';
+  if (/metal|acier|inox|alu|steel|brosse/.test(nom)) return 'metal';
+  if (/tissu|fabric|textile|moquette|feutre/.test(nom)) return 'tissu';
+  return null;
+}
+
 export function maillageFerme(geometrie) {
   const idx = geometrie.getIndex();
   const pos = geometrie.getAttribute('position');
@@ -537,6 +579,26 @@ export function buildStandardMaterial(part, couleur) {
     if (maps.emissiveMap) options.emissiveMap = maps.emissiveMap;
   }
 
+  /* Les matieres fabriquees sur place.
+
+     Elles se declarent par un simple nom dans la bibliotheque — "bois",
+     "beton", "caoutchouc", "metal", "tissu" — et le moteur les peint au
+     chargement. Aucun fichier a telecharger, aucune licence a respecter, et
+     la teinte du materiau les colore : un meme bois donne du chene clair ou
+     du noyer sans refaire d'image. */
+  if (part.texture) {
+    const cartes = texturesProcedurales(part.texture, couleur || part.color);
+    if (cartes) {
+      const r = Math.max(0.05, part.textureEchelle || 1);
+      for (const t of Object.values(cartes)) t.repeat.set(r, r);
+      options.map = cartes.couleur;
+      options.roughnessMap = cartes.rugosite;
+      options.bumpMap = cartes.relief;
+      // la couleur vient de la carte : la garder en plus la doublerait
+      options.color = new THREE.Color(0xffffff);
+    }
+  }
+
   Object.assign(options, avances);
   const m = (laque || physique) ? new THREE.MeshPhysicalMaterial(options)
                                 : new THREE.MeshStandardMaterial(options);
@@ -546,6 +608,7 @@ export function buildStandardMaterial(part, couleur) {
   // Vector2 et scalaire : à poser après coup, le constructeur ne les convertit pas.
   if (maps.normalMap) m.normalScale.set(maps.normalScale, maps.normalScale);
   if (maps.bumpMap) m.bumpScale = maps.bumpScale;
+  else if (part.texture) m.bumpScale = 0.4;
   return m;
 }
 
@@ -555,7 +618,8 @@ export function materialKey(part, couleur) {
     part.material || '', part.emissive || '', part.emissiveIntensite ?? '',
     part.ferme ? 'F' : 'D',
     part.clearcoat ?? '', part.iridescence ?? '', part.transmission ?? '',
-    part.sheen ?? '', part.anisotropy ?? '', part.ior ?? ''].join('|');
+    part.sheen ?? '', part.anisotropy ?? '', part.ior ?? '',
+    part.texture || '', part.textureEchelle ?? ''].join('|');
 }
 
 /** Construit une bibliothèque à partir d'un JSON déjà téléchargé. */

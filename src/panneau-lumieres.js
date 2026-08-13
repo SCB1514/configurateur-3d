@@ -466,6 +466,22 @@ export function creerPanneauLumieres(hote, api) {
   compte.className = 'pl-compte';
   entete.appendChild(titre);
   entete.appendChild(compte);
+
+  // Aperçu filaire des faisceaux
+  const apercuBtn = document.createElement('button');
+  apercuBtn.type = 'button';
+  apercuBtn.className = 'pl-add';
+  apercuBtn.style.marginLeft = 'auto';
+  apercuBtn.title = 'Prévisualiser les cônes et sphères d\'illumination';
+  apercuBtn.textContent = 'Faisceaux';
+  apercuBtn.addEventListener('click', () => {
+    const on = apercuBtn.classList.toggle('on');
+    apercuBtn.textContent = on ? 'Faisceaux ✓' : 'Faisceaux';
+    apercuBtn.style.background = on ? 'var(--accent)' : '';
+    if (api.apercu) api.apercu(on);
+  });
+  entete.appendChild(apercuBtn);
+
   racine.appendChild(entete);
 
   // Zone d'ajout
@@ -941,19 +957,9 @@ export function creerPanneauLumieres(hote, api) {
       });
     }
 
-    // Transformation
-    const contenuTransfo = creerSection(formulaire, 'Transformation', 'transformation');
-    const pos = [...(reglages.pos || [0, 0, 0])];
-    creerTriplet(contenuTransfo, 'Position (mm)', pos, (nouvelle) => api.modifier(uid, { pos: nouvelle }), { step: 1 });
-    const rot = [...(reglages.rot || [0, 0, 0])];
-    creerTriplet(contenuTransfo, 'Rotation (°)', rot, (nouvelle) => api.modifier(uid, { rot: nouvelle }), { step: 1 });
-    const ech = [...(reglages.echelle || [1, 1, 1])];
-    creerTripletEchelle(contenuTransfo, 'Échelle', ech, uid, api);
-
-    // Cotes
-    const contenuCotes = creerSection(formulaire, 'Cotes', 'cotes');
-    const cotes = [...(reglages.cotes || [0, 0, 0])];
-    creerTriplet(contenuCotes, 'Dimensions (mm)', cotes, (nouvelle) => api.modifier(uid, { cotes: nouvelle }), { min: 0, step: 1 });
+    // Transformation et cotes sont supprimees : position, rotation et echelle
+    // se gerent au gizmo, et les dimensions au double-clic sur la boite
+    // englobante. Le panneau ne garde que ce qui concerne la LUMIERE.
   }
 
   // Rafraîchit la liste, les calques et le formulaire
