@@ -903,7 +903,7 @@ function wireRendu() {
   $('#rp-reset').onclick = () => {
     rendu.regler({ ombres: 0.7, occlusion: 0.7, bloom: 0.2, sol: true,
                    reflets: true, reperes: true, qualite: 'haute' });
-    rendu.appliquerEnvironnement('studio');
+    rendu.appliquerEnvironnement('global');
     app.viewer.setFocale(40);
     app.viewer.setRotationAuto(false);
     refreshRendu();

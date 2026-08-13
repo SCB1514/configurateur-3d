@@ -228,7 +228,7 @@ export class Viewer {
 
     /* ---------- moteur de rendu ---------- */
     this.rendu = new Rendu(this);
-    this.rendu.appliquerEnvironnement('studio');
+    this.rendu.appliquerEnvironnement('global');
     // Le post-traitement arrive en différé : la scène doit rester utilisable
     // même si la carte graphique refuse les cibles de rendu flottantes.
     this.rendu.activerPostTraitement().catch(e => {

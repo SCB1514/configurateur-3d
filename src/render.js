@@ -51,6 +51,29 @@ export const ENVIRONNEMENTS = {
       { pos: [0, 7, 3], taille: [6, 2], couleur: 0xfff0dc, force: 2.0 },
     ],
   },
+  global: {
+    nom: 'Global',
+    /* Illumination globale : la lumiere vient de partout a la fois.
+
+       Les trois autres ambiances sont eclairees comme un studio photo — une
+       source principale, des panneaux vifs, une ombre franche. C'est beau
+       sur une machine isolee, mais sur une salle entiere cela dessine une
+       flaque de lumiere et laisse les fonds dans le noir : l'effet
+       projecteur.
+
+       Ici, pas de panneau et pas de soleil dominant. Une voute uniforme
+       eclaire chaque surface depuis tout l'hemisphere — c'est exactement ce
+       que calcule l'illumination globale diffuse — et c'est l'occlusion
+       ambiante qui creuse les volumes. Le soleil ne subsiste qu'a faible
+       puissance, juste assez pour poser une ombre de contact sans creer de
+       cote eclaire et de cote sombre. */
+    uniforme: true, voileDoux: true,
+    fondCentre: 0x39404b, fondBord: 0x1a1e25,
+    sol: 0x2b3038, solRugosite: 0.44, solMetal: 0.0,
+    env: { ciel: 0xc2cad4, horizon: 0x9aa2ad, sol: 0x646b74 },
+    exposition: 1.15, soleil: 0.9, ambiance: 0.06, reflet: 0.20,
+    sources: [],
+  },
   showroom: {
     nom: 'Showroom',
     fondCentre: 0xf2f5f8, fondBord: 0xc6ccd5,
@@ -102,13 +125,16 @@ function textureFond(centre, bord) {
  * Sans lui, le plan récepteur se termine par une arête franche en plein
  * cadre. Avec, il se dissout dans le fond et le sol paraît infini.
  */
-function textureVoile() {
+function textureVoile(doux = false) {
   const t = document.createElement('canvas');
   t.width = t.height = 256;
   const c = t.getContext('2d');
   const d = c.createRadialGradient(128, 128, 10, 128, 128, 126);
+  // Un voile trop resserre dessine lui-meme une flaque claire au centre du
+  // sol — le meme effet projecteur, obtenu par la transparence au lieu de la
+  // lumiere. En mode uniforme il reste plein jusqu'aux trois quarts.
   d.addColorStop(0, '#ffffff');
-  d.addColorStop(0.55, '#dddddd');
+  d.addColorStop(doux ? 0.82 : 0.55, doux ? '#f2f2f2' : '#dddddd');
   d.addColorStop(1, '#000000');
   c.fillStyle = d;
   c.fillRect(0, 0, 256, 256);
@@ -147,7 +173,10 @@ function batirEnvironnement(reglage) {
     }));
   scene.add(voute);
 
-  for (const s of reglage.sources) {
+  // Une ambiance uniforme n'a pas de panneaux : c'est precisement ce qui la
+  // distingue. Y ajouter la moindre boite lumineuse recreerait le point chaud
+  // que l'on cherche a supprimer.
+  for (const s of reglage.sources || []) {
     const panneau = new THREE.Mesh(
       new THREE.PlaneGeometry(s.taille[0], s.taille[1]),
       new THREE.MeshBasicMaterial({ color: s.couleur }));
@@ -166,7 +195,7 @@ export class Rendu {
   constructor(viewer) {
     this.viewer = viewer;
     this.reglages = {
-      environnement: 'studio',
+      environnement: 'global',
       exposition: 1.15,
       ombres: 0.7,
       occlusion: 0.7,
@@ -237,8 +266,16 @@ export class Rendu {
     const emprise = viewer.bounds();
     const reglage = ENVIRONNEMENTS[this.reglages.environnement] || ENVIRONNEMENTS.studio;
 
+    if (this._voile && this._voileDoux !== !!reglage.voileDoux) {
+      this._voile.dispose();
+      this._voile = textureVoile(reglage.voileDoux);
+      this._voileDoux = !!reglage.voileDoux;
+      if (this._sol) { this._sol.material.alphaMap = this._voile; this._sol.material.needsUpdate = true; }
+    }
+
     if (!this._sol) {
-      this._voile = textureVoile();
+      this._voileDoux = !!reglage.voileDoux;
+      this._voile = textureVoile(reglage.voileDoux);
       this._sol = new THREE.Mesh(
         new THREE.PlaneGeometry(1, 1),
         new THREE.MeshStandardMaterial({

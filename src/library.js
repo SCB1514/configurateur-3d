@@ -1,4 +1,5 @@
 import * as THREE from '../vendor/three/three.module.js';
+import { BLOCS_LUMIERE, MATIERES_LUMIERE } from './catalogue-lumieres.js';
 
 /* ============================================================
    Chargement de la bibliothèque de blocs (export Rhino)
@@ -61,6 +62,11 @@ export class Library {
       emissiveIntensite: m.emissiveIntensite ?? m.emissiveIntensity ?? 1.6,
       maps: this._maps(m.maps || m.textures),
     })).filter(m => m.id);
+    for (const m of MATIERES_LUMIERE) {
+      if (!this.materials.some(x => x.id === m.id)) {
+        this.materials.push({ ...m, emissive: '', emissiveIntensite: 1.6, maps: null });
+      }
+    }
     this.materialsById = new Map(this.materials.map(m => [m.id.toLowerCase(), m]));
     // aoMap lit un second jeu de coordonnées : on ne le prépare que s'il sert
     this._needsUV1 = this.materials.some(m => m.maps?.aoMap);
@@ -68,7 +74,17 @@ export class Library {
     this.blocks = new Map();
     this.order = [];
 
-    for (const b of raw.blocks || []) {
+    /* Les luminaires sont fournis avec l'application, pas avec la
+       bibliotheque. Une implantation de salle a besoin d'eclairage quelle que
+       soit la bibliotheque de machines chargee, et personne n'a envie de
+       modeliser un spot dans Rhino pour le poser au plafond. Une
+       bibliotheque qui definirait un bloc de meme identifiant garde la main :
+       le catalogue integre ne s'impose jamais. */
+    const fournis = (raw.blocks || []).map(b => String(b.id));
+    const blocs = [...(raw.blocks || []),
+                   ...BLOCS_LUMIERE.filter(b => !fournis.includes(b.id))];
+
+    for (const b of blocs) {
       const block = this._prepare(b);
       if (block) { this.blocks.set(block.id, block); this.order.push(block.id); }
     }
@@ -98,6 +114,17 @@ export class Library {
         if (c && !seen.has(c)) seen.set(c, { id: c, name: c });
       }
       this.categories = [...seen.values()];
+    }
+
+    // La categorie des luminaires integres doit exister meme quand la
+    // bibliotheque declare explicitement ses propres categories : sinon les
+    // appareils sont poses dans le catalogue mais aucun onglet ne les montre.
+    const cats = this.categories.map(c => c.id || c);
+    for (const b of BLOCS_LUMIERE) {
+      if (this.blocks.has(b.id) && b.category && !cats.includes(b.category)) {
+        this.categories.push({ id: b.category, name: b.category });
+        cats.push(b.category);
+      }
     }
   }
 
@@ -239,6 +266,7 @@ export class Library {
         metalness: m.metalness ?? 0.05,
         roughness: m.roughness ?? 0.72,
         paintable: !!m.paintable,
+        ferme: maillageFerme(g),
         material: m.material || '',
         emissive: m.emissive || '',
         emissiveIntensite: m.emissiveIntensite ?? m.emissiveIntensity ?? 1.6,
@@ -361,6 +389,57 @@ function projectUV(geometry, taille) {
  * PBR, partagée par la scène et par les vignettes. Deux implémentations
  * divergeraient au premier réglage.
  */
+/**
+ * Le maillage est-il ferme ?
+ *
+ * On dessine tout en double face pour tolerer les surfaces ouvertes venues de
+ * Rhino — un capot modelise comme une simple nappe disparaitrait vu de dos.
+ * Mais la double face desactive l'elimination des faces arriere : sur un
+ * solide ferme, la carte graphique calcule alors l'interieur de la piece, que
+ * personne ne verra jamais. C'est la moitie du travail de rasterisation jetee.
+ *
+ * Un maillage ferme se reconnait a ceci : chaque arete y est partagee par
+ * exactement deux triangles. Le test est lineaire, fait une fois au
+ * chargement, et son resultat vaut pour toutes les copies du bloc.
+ */
+export function maillageFerme(geometrie) {
+  const idx = geometrie.getIndex();
+  const pos = geometrie.getAttribute('position');
+  if (!idx || !pos) return false;
+  const a = idx.array, n = a.length;
+  if (n < 12 || n % 3) return false;
+  // au-dela d'un certain volume le test coute plus qu'il ne rapporte
+  if (n > 300000) return false;
+
+  /* Comparer les indices ne suffit pas — et c'est le piege.
+
+     Un cube exporte depuis Rhino, ou fabrique par un script, porte le plus
+     souvent vingt-quatre sommets et non huit : chaque face a les siens, pour
+     que sa normale soit franche. Deux faces adjacentes ne partagent alors
+     aucun indice, et un test par indices declare le solide ouvert alors
+     qu'il est parfaitement ferme.
+
+     On compare donc les POSITIONS, arrondies au dixieme de millimetre pour
+     absorber les ecarts de calcul. */
+  const p = pos.array;
+  const clefSommet = (i) => (Math.round(p[i * 3] * 1e4) + ',' +
+                             Math.round(p[i * 3 + 1] * 1e4) + ',' +
+                             Math.round(p[i * 3 + 2] * 1e4));
+  const cache = new Array(pos.count);
+  const sommet = (i) => (cache[i] !== undefined ? cache[i] : (cache[i] = clefSommet(i)));
+
+  const aretes = new Map();
+  for (let i = 0; i < n; i += 3) {
+    for (let k = 0; k < 3; k++) {
+      const u = sommet(a[i + k]), v = sommet(a[i + (k + 1) % 3]);
+      const clef = u < v ? u + '|' + v : v + '|' + u;
+      aretes.set(clef, (aretes.get(clef) || 0) + 1);
+    }
+  }
+  for (const compte of aretes.values()) if (compte !== 2) return false;
+  return true;
+}
+
 export function buildStandardMaterial(part, couleur) {
   const maps = part.maps || {};
   const options = {
@@ -369,7 +448,9 @@ export function buildStandardMaterial(part, couleur) {
     roughness: part.roughness,
     transparent: part.opacity < 1 || !!maps.alphaMap,
     opacity: part.opacity,
-    side: THREE.DoubleSide,
+    // face avant seule quand la piece est un solide ferme : moitie moins de
+    // fragments a calculer, et rigoureusement la meme image
+    side: part.ferme ? THREE.FrontSide : THREE.DoubleSide,
     // L'environnement fait tout le rendu des reflets : sans lui, un métal
     // rugueux paraît mat et un chrome paraît gris.
     envMapIntensity: 1.15,
@@ -413,7 +494,8 @@ export function buildStandardMaterial(part, couleur) {
 /** Signature d'un matériau, pour n'en construire qu'un par combinaison. */
 export function materialKey(part, couleur) {
   return [couleur || part.color, part.opacity, part.metalness, part.roughness,
-    part.material || '', part.emissive || '', part.emissiveIntensite ?? ''].join('|');
+    part.material || '', part.emissive || '', part.emissiveIntensite ?? '',
+    part.ferme ? 'F' : 'D'].join('|');
 }
 
 /** Construit une bibliothèque à partir d'un JSON déjà téléchargé. */
