@@ -34,8 +34,13 @@ export class Viewer {
        repli WebGL 1 rendrait la moitie de ce fichier inoperante — mieux
        vaut le dire tout de suite que rendre une image degradee sans
        expliquer pourquoi.  */
+    /* preserveDrawingBuffer etait pose pour la capture d'image. Il oblige le
+       navigateur a garder une copie du tampon a chaque image, qu'on la lise
+       ou non — on payait toute l'annee un service utilise trois fois. La
+       capture rend et relit dans le meme tour de boucle, ce qui fonctionne
+       sans lui. */
     const contexte = canvas.getContext('webgl2', {
-      antialias: true, alpha: false, preserveDrawingBuffer: true,
+      antialias: true, alpha: false, preserveDrawingBuffer: false,
       powerPreference: 'high-performance', stencil: false, depth: true,
     });
     if (!contexte) {
@@ -45,7 +50,7 @@ export class Viewer {
 
     this.renderer = new THREE.WebGLRenderer({
       canvas, context: contexte, antialias: true, alpha: false,
-      preserveDrawingBuffer: true, powerPreference: 'high-performance',
+      preserveDrawingBuffer: false, powerPreference: 'high-performance',
     });
     this.webgl2 = true;
     // l'anisotropie redresse les textures vues de biais — le sol, surtout
