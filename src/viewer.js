@@ -248,6 +248,10 @@ export class Viewer {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.rendu?.redimensionner(w, h);
+    // Redimensionner reconstruit les cibles de rendu ; la carte d'ombre, elle,
+    // n'est plus refaite d'office. On la redemande explicitement, sinon la
+    // premiere image apres un changement de taille peut sortir sans ombres.
+    this.marquerOmbres();
     this.demanderImage(3);
   }
 

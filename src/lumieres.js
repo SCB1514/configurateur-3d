@@ -248,6 +248,9 @@ export class Luminaires {
         s.map = await cookieDepuisIES(s.userData.ies, s.userData.angle);
         s.castShadow = true;        // three n'installe la matrice de projection qu'ainsi
         s.shadow.mapSize.set(512, 512);
+        // Le profil arrive après coup, une fois le fichier lu : sans cette
+        // demande, le faisceau n'apparaîtrait qu'au battement suivant.
+        this.viewer.marquerOmbres();
       } catch (e) {
         console.warn('Profil IES illisible :', e);
       }
@@ -272,17 +275,35 @@ export class Luminaires {
       return { g, d: p.distanceToSquared(oeil) };
     }).sort((a, b) => a.d - b.d);
 
-    let allumees = 0;
+    /* Deux précautions, apprises à l'écran.
+
+       L'hystérésis d'abord : une source qui éclaire déjà garde sa place tant
+       qu'elle reste dans le budget élargi d'un cran. Sans cela, deux
+       luminaires presque à égale distance se disputent la dernière place et
+       s'allument tour à tour à chaque arbitrage — trois fois par seconde.
+
+       Le signalement ensuite : allumer ou éteindre une source change à la
+       fois l'image ET le nombre de sources actives, ce qui oblige WebGL à
+       recompiler ses nuanciers. Il faut donc réclamer une image, sans quoi
+       le changement n'apparaîtrait qu'au battement de sécurité suivant. */
+    let allumees = 0, change = false;
     for (const { g } of classees) {
       const s = g.userData.source;
       if (!s) continue;
+
       const eteint = g.userData.spec?.actif === false;
-      const veut = !eteint && allumees < this.budget;
-      if (s.visible !== veut) s.visible = veut;
+      const marge = s.visible ? 1 : 0;                  // le sortant est favorisé
+      const veut = !eteint && allumees < this.budget + marge && allumees < this.budget;
+
+      if (s.visible !== veut) { s.visible = veut; change = true; }
       if (veut) allumees++;
+
       // la surface, elle, brille toujours — sauf si l'appareil est éteint
-      if (g.userData.surface) g.userData.surface.visible = !eteint;
+      const surface = g.userData.surface;
+      if (surface && surface.visible === eteint) { surface.visible = !eteint; change = true; }
     }
+
+    if (change) this.viewer.marquerOmbres();
   }
 
   /** Le budget suit la qualité demandée. */

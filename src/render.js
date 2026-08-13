@@ -269,8 +269,15 @@ export class Rendu {
     const taille = emprise.getSize(new THREE.Vector3());
     const cote = Math.max(taille.x, taille.y) * 3.2 + 4;
 
-    this._sol.geometry.dispose();
-    this._sol.geometry = new THREE.PlaneGeometry(cote, cote);
+    /* Pendant qu'on déplace une machine, l'emprise change à chaque image et
+       majSol est rappelé quatre fois par seconde. Reconstruire le plan à
+       chaque fois, c'est jeter puis réallouer une géométrie en pleine
+       manipulation — un à-coup, précisément au moment où l'on demande de la
+       fluidité. On ne le refait que si la taille a réellement bougé. */
+    if (Math.abs((this._sol.geometry.parameters?.width ?? 0) - cote) > cote * 0.02) {
+      this._sol.geometry.dispose();
+      this._sol.geometry = new THREE.PlaneGeometry(cote, cote);
+    }
     this._sol.position.set(centre.x, centre.y, Math.min(emprise.min.z, 0) + 0.001);
     this.polirSol(reglage);
 
@@ -430,10 +437,18 @@ export class Rendu {
     // par-dessus adoucirait les textures sans rien gagner sur les aretes.
     p.smaa.enabled = haute && !this._msaa;
 
-    // La resolution est le levier le plus direct : chaque pixel se paie
-    // quatre fois dans le compositeur, dont les cibles sont en virgule
-    // flottante. En mode rapide on rend a un pixel pour un pixel d'ecran.
-    const ratio = haute ? Math.min(devicePixelRatio, 1.5) : 1;
+    /* La résolution est le levier le plus direct : chaque pixel du
+       compositeur se paie sur une cible en virgule flottante, quatre fois
+       échantillonnée. Deux enseignements de la mise au point :
+
+       — écran et compositeur doivent porter le MÊME facteur. S'ils
+         divergent, l'image est rendue à une taille puis rééchantillonnée à
+         une autre : on paie la finesse sans la voir.
+       — au-delà de 1,25, la finesse supplémentaire ne se voit plus, parce
+         que l'antialiasing matériel à quatre échantillons a déjà traité les
+         arêtes. Sur un écran à haute densité, passer de 2 à 1,25 divise le
+         travail par deux et demi sans que l'œil s'en aperçoive. */
+    const ratio = haute ? Math.min(devicePixelRatio, 1.25) : 1;
     // Chaque source allumee se paie sur chaque pixel de chaque objet : le
     // budget d'eclairage est le premier levier quand la machine peine.
     this.viewer.luminaires?.reglerBudget(haute ? 8 : 3);
@@ -444,10 +459,9 @@ export class Rendu {
        étirée au nouveau — un éclair de vue déformée au moment où la
        qualité bascule. On pose donc l'écran, puis le compositeur, puis
        on redimensionne une seule fois. */
-    const ratioEcran = haute ? Math.min(devicePixelRatio, 2) : 1;
-    if (this.viewer.renderer.getPixelRatio() !== ratioEcran || this._ratio !== ratio) {
+    if (this.viewer.renderer.getPixelRatio() !== ratio || this._ratio !== ratio) {
       this._ratio = ratio;
-      this.viewer.renderer.setPixelRatio(ratioEcran);
+      this.viewer.renderer.setPixelRatio(ratio);
       this._composer.setPixelRatio(ratio);
       this.viewer.resize();
     }
@@ -475,13 +489,17 @@ export class Rendu {
   /**
    * Signale que la vue bouge.
    *
-   * L'occlusion ambiante coûte à elle seule plus que tout le reste réuni, et
-   * personne ne l'examine en faisant tourner la scène. On la suspend le temps
-   * du mouvement et on la rétablit dès l'arrêt : on garde l'aisance de la
-   * manipulation sans rien céder sur l'image que l'on regarde vraiment.
+   * L'occlusion ambiante et le halo coûtent à eux deux plus que tout le
+   * reste réuni, et personne ne les examine en faisant tourner la scène. On
+   * les suspend le temps du mouvement.
+   *
+   * Le délai de retour est volontairement long. À 200 ms, les micro-pauses
+   * d'une main sur la souris — il y en a plusieurs par seconde dans une
+   * rotation ordinaire — suffisaient à relancer l'enrichissement, qui
+   * repartait aussitôt : c'était exactement le clignotement constaté.
    */
   signalerMouvement() {
-    this._bougeJusqua = performance.now() + 200;
+    this._bougeJusqua = performance.now() + 380;
   }
 
   /**
@@ -492,10 +510,56 @@ export class Rendu {
   rendre(forcer = false) {
     if (!this._composer) return false;
 
-    const immobile = forcer || performance.now() >= (this._bougeJusqua || 0);
+    /* ── l'enrichissement, en fondu ──
+
+       Allumer d'un coup l'occlusion et le halo à l'arrêt de la rotation
+       faisait sauter l'image : les creux se remplissaient d'ombre en une
+       seule trame, et l'œil lisait un défaut d'affichage plutôt qu'un gain
+       de qualité. Ils montent maintenant progressivement, sur environ un
+       tiers de seconde, et redescendent d'un coup dès qu'on reprend la
+       main — car là, personne ne regarde.
+
+       Le fondu réclame lui-même des images : sans cela le rendu à la
+       demande s'arrêterait à mi-chemin et figerait une occlusion à moitié
+       appliquée. */
+    const t = performance.now();
+    const immobile = forcer || t >= (this._bougeJusqua || 0);
+
+    /* Le fondu se compte en millisecondes, pas en images.
+
+       Avancer d'un pourcentage par image paraît naturel, et c'est un piège :
+       sur une machine qui rend à huit images par seconde, le même fondu
+       s'étire sur trois secondes — l'occlusion arrive longtemps après que
+       l'on a lâché la souris, et l'on croit à un défaut. Mesuré en temps, il
+       dure un tiers de seconde partout. */
+    const DUREE = 320;
+
+    if (forcer) {
+      this._fondu = 1;
+    } else if (!immobile) {
+      this._fondu = 0;
+      this._fonduDepart = 0;
+    } else {
+      if (!this._fonduDepart) this._fonduDepart = t;
+      this._fondu = Math.min(1, (t - this._fonduDepart) / DUREE);
+      if (this._fondu < 1) this.viewer.demanderImage(2);
+    }
+
+    const k = this._fondu;
 
     const ao = this._passes.ao;
-    if (ao) ao.enabled = immobile && this.reglages.occlusion > 0.01;
+    if (ao) {
+      ao.enabled = k > 0.02 && this.reglages.occlusion > 0.01;
+      ao.blendIntensity = this.reglages.occlusion * k;
+    }
+
+    // Le halo suit le même sort : treize passes plein écran valent bien
+    // qu'on s'en dispense le temps d'une rotation.
+    const bloom = this._passes.bloom;
+    if (bloom) {
+      bloom.enabled = k > 0.02 && this.reglages.bloom > 0.01;
+      bloom.strength = this.reglages.bloom * k;
+    }
 
     this._composer.render();
     return true;
