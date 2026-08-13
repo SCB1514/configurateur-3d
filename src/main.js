@@ -944,10 +944,14 @@ function suivreRythme() {
     carte.title = nom;
   } catch { /* extension refusee */ }
 
+  /* La scene ne se redessine qu'a la demande : au repos, il n'y a
+     litteralement plus rien a mesurer. On n'affiche donc le rythme que
+     lorsqu'il vient d'etre releve — pendant une manipulation, le seul
+     moment ou il renseigne sur quoi que ce soit. */
   setInterval(() => {
-    const n = app.viewer?.imagesParSeconde;
-    if (n) champ.textContent = n;
-  }, 500);
+    const n = app.viewer?.rythmeFrais;
+    champ.textContent = n ? n : 'au repos';
+  }, 400);
 }
 
 /** Remet les commandes au diapason de l'état réel du moteur. */

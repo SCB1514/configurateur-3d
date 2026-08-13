@@ -248,11 +248,44 @@ export class Viewer {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.rendu?.redimensionner(w, h);
+    this.demanderImage(3);
+  }
+
+  /* ══════════ rendu a la demande ══════════
+
+     Une scene immobile redessinee soixante fois par seconde, c'est
+     soixante fois le meme calcul. Sur une salle complete cela occupe la
+     carte en permanence : le ventilateur tourne, la batterie descend, et
+     surtout la machine n'a plus de reserve au moment ou l'on saisit la
+     souris — d'ou l'a-coup au demarrage de chaque rotation.
+
+     On ne dessine donc que lorsque quelque chose a change. Le risque de
+     cette approche est connu : une source de changement oubliee, et la
+     vue reste figee. D'ou le battement de securite — quatre images par
+     seconde quoi qu'il arrive. Un oubli se rattrape en un quart de
+     seconde au lieu de bloquer l'affichage. */
+
+  /** Reclame le dessin des prochaines images. */
+  demanderImage(n = 2) {
+    this._enAttente = Math.max(this._enAttente || 0, n);
+  }
+
+  _doitDessiner() {
+    if (this._enAttente > 0) { this._enAttente--; return true; }
+    const t = performance.now();
+    if (t - (this._tDessin || 0) > 250) return true;      // battement de securite
+    return false;
   }
 
   _loop = () => {
     requestAnimationFrame(this._loop);
     this._animerCamera();
+    /* OrbitControls sait dire s'il a bouge, mais son seuil est absolu et
+       minuscule : il continue de signaler un fremissement bien apres que
+       tout est immobile, ce qui reveillait le dessin trois fois par seconde
+       pour rien. Notre detecteur, lui, mesure par rapport a la distance de
+       recul — un dixieme de millimetre a trois metres n'est pas un
+       mouvement. C'est lui qui decide. */
     this.controls.update();
     this._detecterMouvement();
 
@@ -266,6 +299,9 @@ export class Viewer {
     if (this.dimGroup) this._orientDimensions();
     this._suivreEmprise();
     this.luminaires.arbitrer();
+
+    if (!this._doitDessiner()) return;
+    this._tDessin = performance.now();
     this._mesurerRythme();
     if (!this.rendu?.rendre()) this.renderer.render(this.scene, this.camera);
   };
@@ -282,10 +318,16 @@ export class Viewer {
     const precedent = this._tImage || t;
     this._tImage = t;
 
+    // Depuis que la scene ne se redessine qu'a la demande, les longs
+    // intervalles sont des periodes d'immobilite, pas de la lenteur. Les
+    // compter ferait afficher « 4 images/s » sur une station qui n'a rien
+    // fait. On ne retient que les images enchainees, c'est-a-dire celles
+    // rendues pendant une manipulation — le seul moment qui compte.
     const ecart = t - precedent;
-    if (ecart <= 0 || ecart > 500) return;                 // onglet en arriere-plan
+    if (ecart <= 0 || ecart > 100) return;
     this._rythme = this._rythme ? this._rythme * 0.94 + ecart * 0.06 : ecart;
     this.imagesParSeconde = Math.round(1000 / this._rythme);
+    this._mesureA = t;
 
     if (this._qualiteJugee) return;
     this._tDepart = this._tDepart || t;
@@ -308,6 +350,7 @@ export class Viewer {
   marquerOmbres() {
     this.renderer.shadowMap.needsUpdate = true;
     this._selSale = true;
+    this.demanderImage(2);
   }
 
   /**
@@ -352,7 +395,13 @@ export class Viewer {
                || t.distanceTo(this._camPrec.t) > seuil
                || Math.abs(this.camera.fov - this._camPrec.fov) > 1e-3;
 
-    if (!bouge) return;
+    if (!bouge) {
+      // A l'arret, l'occlusion revient : il faut une image pour la montrer.
+      if (this._bougeait) { this._bougeait = false; this.demanderImage(4); }
+      return;
+    }
+    this._bougeait = true;
+    this.demanderImage(2);
     this.rendu?.signalerMouvement();
     this._camPrec.p.copy(p);
     this._camPrec.t.copy(t);
@@ -391,6 +440,10 @@ export class Viewer {
       const mesh = new THREE.Mesh(p.geometry, this._material(p, finishColor));
       mesh.castShadow = true;
       mesh.receiveShadow = true;
+      // Les materiaux sont en double face pour tolerer les maillages ouverts
+      // venus de Rhino. La carte d'ombre, elle, n'a que faire des faces
+      // arriere d'un solide ferme : le lui dire divise son cout par deux.
+      mesh.material.shadowSide = THREE.FrontSide;
       mesh.userData.paintable = p.paintable;
       g.add(mesh);
     }
@@ -543,6 +596,7 @@ export class Viewer {
     if (obj) {
       if (this.editable !== false) { this.gizmo.attach(obj); this.gizmo.visible = true; }
       this._selSale = false;
+      this.demanderImage(2);
       this.selBox.box.copy(this.boundsOf(this.selection) ?? new THREE.Box3());
       this.selBox.visible = true;
     } else {
@@ -596,6 +650,12 @@ export class Viewer {
   setMagnet(on) {
     this.magnet = on;
     if (!on) { this.snapMarker.visible = false; this.hintDots.visible = false; }
+  }
+
+  /** Le rythme mesure, ou null s'il date de trop pour etre honnete. */
+  get rythmeFrais() {
+    if (!this._mesureA || performance.now() - this._mesureA > 2000) return null;
+    return this.imagesParSeconde;
   }
 
   get snapTol() { return Math.max(this.gridStep * 0.5, 0.004); }
@@ -900,6 +960,7 @@ export class Viewer {
 
   _onMove(ev) {
     if (!this.ghost) return;
+    this.demanderImage(2);
     const p = this._dropPoint(ev);
     if (!p) { this.ghost.visible = false; this.clearSnapHints(); return; }
     this.ghost.visible = true;

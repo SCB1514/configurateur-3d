@@ -381,8 +381,17 @@ export class Rendu {
     ao.output = GTAOPass.OUTPUT.Default;
     composer.addPass(ao);
 
+    /* Le halo coute treize passes plein ecran par image — de loin le plus
+       gourmand du compositeur. Or un halo est flou par nature : le calculer
+       a demi-resolution divise son cout par quatre sans que rien ne se voie.
+       EffectComposer impose sa taille a chaque passe lors d'un
+       redimensionnement, d'ou l'interception. */
     const bloom = new UnrealBloomPass(
       new THREE.Vector2(largeur, hauteur), this.reglages.bloom, 0.45, 0.92);
+    const tailleBloom = bloom.setSize.bind(bloom);
+    bloom.setSize = (l, h) => tailleBloom(Math.max(1, Math.round(l * 0.5)),
+                                          Math.max(1, Math.round(h * 0.5)));
+    bloom.setSize(largeur, hauteur);
     composer.addPass(bloom);
 
     composer.addPass(new OutputPass());
@@ -411,6 +420,9 @@ export class Rendu {
       radius: 0.35, distanceExponent: 1.6, thickness: 0.6,
       scale: 1, samples: haute ? 16 : 8,
     });
+    // le debruitage de l'occlusion : seize echantillons en qualite haute,
+    // huit suffisent quand on cherche d'abord la vitesse
+    p.ao.pdSamples = haute ? 16 : 8;
 
     p.bloom.enabled = this.reglages.bloom > 0.01;
     p.bloom.strength = this.reglages.bloom;
@@ -493,6 +505,7 @@ export class Rendu {
 
   regler(patch) {
     Object.assign(this.reglages, patch);
+    this.viewer.demanderImage(3);
 
     if (patch.environnement) this.appliquerEnvironnement(patch.environnement);
     if (patch.exposition !== undefined) this.viewer.renderer.toneMappingExposure = patch.exposition;
