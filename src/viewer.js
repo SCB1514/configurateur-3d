@@ -425,6 +425,7 @@ export class Viewer {
        mouvement. C'est lui qui decide. */
     this.controls.update();
     this._detecterMouvement();
+    this._accorderGizmo();
 
     // La boite englobante d'une selection exige de parcourir tous les
     // maillages : elle ne se refait que si la selection a bouge.
@@ -562,6 +563,37 @@ export class Viewer {
    * revenait jamais apres un passage par le plan. Le zoom joue le meme role
    * pour l'orthographique.
    */
+  /**
+   * Le gizmo suit la camera active, et se restreint en vue de plan.
+   *
+   * TransformControls retient la camera qu'on lui donne a la construction,
+   * exactement comme les passes de post-traitement. En plan il continuait
+   * donc de se projeter avec la perspective : la poignee s'affichait a cote
+   * de l'objet, et le deplacement suivait un axe qui n'etait pas celui
+   * qu'on tirait.
+   *
+   * On en profite pour retirer ce qui n'a pas de sens vu de dessus. Tirer un
+   * objet en Z sur un plan, c'est le pousser vers l'oeil sans rien voir
+   * bouger ; le faire pivoter autour de X ou de Y, c'est le coucher hors du
+   * plan. Un editeur de plan ne propose que ce qui se lit : deplacement dans
+   * le plan, rotation autour de la verticale, echelle dans le plan.
+   */
+  _accorderGizmo() {
+    const g = this.gizmo;
+    if (!g) return;
+    if (g.camera !== this.camera) { g.camera = this.camera; this.demanderImage(2); }
+
+    const plan = !!this.modePlan;
+    const clef = plan + '|' + this.tool;
+    if (this._gizmoEtat === clef) return;
+    this._gizmoEtat = clef;
+
+    if (!plan) { g.showX = g.showY = g.showZ = true; }
+    else if (this.tool === 'rotate') { g.showX = g.showY = false; g.showZ = true; }
+    else { g.showX = g.showY = true; g.showZ = false; }
+    this.demanderImage(2);
+  }
+
   _focale() {
     return Number.isFinite(this.camera.fov) ? this.camera.fov
          : (Number(this.camera.zoom) || 1) * 1000;
@@ -838,6 +870,7 @@ export class Viewer {
   }
 
   setTool(tool) {
+    this._gizmoEtat = null;      // la restriction du plan se recalcule
     this.tool = tool;
     // « sélection » : on pointe et on choisit, sans gizmo de transformation.
     if (tool === 'select') {
