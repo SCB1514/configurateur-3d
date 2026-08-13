@@ -318,10 +318,15 @@ export function appliquerReglages(g, patch, echelle = 1) {
  */
 export class Luminaires {
   static _compteur = 0;
+  static _compteurCalque = 0;
 
   constructor(viewer) {
     this.viewer = viewer;
     this.groupes = new Set();
+    /* Les calques sont une commodite d'organisation, pas une propriete de la
+       scene : ils regroupent des appareils pour les eteindre ensemble.
+       Une lumiere sans calque reste parfaitement valable. */
+    this.calques = new Map();
     this.budget = 8;
     this._surfaciquePrete = false;
     this._t = 0;
@@ -412,16 +417,25 @@ export class Luminaires {
       const s = g.userData.source;
       if (!s) continue;
 
-      const eteint = g.userData.spec?.actif === false;
+      // un calque masque coupe aussi la source : sinon on continuerait de
+      // payer le prix d'un appareil qu'on ne voit pas
+      const eteint = g.userData.spec?.actif === false || s?.userData?.interdit;
       const marge = s.visible ? 1 : 0;                  // le sortant est favorisé
       const veut = !eteint && allumees < this.budget + marge && allumees < this.budget;
 
       if (s.visible !== veut) { s.visible = veut; change = true; }
       if (veut) allumees++;
 
-      // la surface, elle, brille toujours — sauf si l'appareil est éteint
+      /* La visibilite de la surface ne se decide PAS ici.
+
+         L'arbitrage passe trois fois par seconde et ne connait que le budget
+         d'eclairage. En reglant lui-meme la surface, il rallumait tout ce que
+         l'utilisateur venait de masquer, avec un tiers de seconde de retard —
+         un masquage qui ne tient pas ressemble a une panne. */
       const surface = g.userData.surface;
-      if (surface && surface.visible === eteint) { surface.visible = !eteint; change = true; }
+      const avant = surface?.visible;
+      this._appliquerVisibilite(g);
+      if (surface && surface.visible !== avant) change = true;
     }
 
     if (change) this.viewer.marquerOmbres();
@@ -466,6 +480,93 @@ export class Luminaires {
     return g.userData.uid;
   }
 
+  /** Les groupes poses librement : ceux que l'on peut selectionner et bouger. */
+  objetsLibres() {
+    const l = [];
+    for (const g of this.groupes) if (g.userData.libre) l.push(g);
+    return l;
+  }
+
+  /** Le groupe portant cet identifiant, quel qu'il soit. */
+  objet(uid) { return this._trouver(uid); }
+
+  /**
+   * Reporte dans les reglages ce que le gizmo vient de faire.
+   *
+   * Sans cela le panneau afficherait encore l'ancienne position, et la
+   * prochaine saisie au clavier ferait bondir l'appareil en arriere.
+   */
+  noterTransformation(g) {
+    const spec = g.userData.spec;
+    if (!spec) return;
+    const e = this.viewer.lib?.scale ?? 1;
+    spec.pos = [g.position.x / e, g.position.y / e, g.position.z / e];
+    spec.rot = [g.rotation.x / DEG, g.rotation.y / DEG, g.rotation.z / DEG];
+    spec.echelle = [g.scale.x, g.scale.y, g.scale.z];
+  }
+
+  /* ══════════ calques ══════════ */
+
+  calquesListe() {
+    return [...this.calques.values()].map(c => ({ ...c }));
+  }
+
+  creerCalque(nom) {
+    const id = 'cal-' + (++Luminaires._compteurCalque);
+    this.calques.set(id, { id, nom: nom || 'Calque ' + Luminaires._compteurCalque, visible: true });
+    return id;
+  }
+
+  renommerCalque(id, nom) {
+    const c = this.calques.get(id);
+    if (c && nom) c.nom = String(nom).slice(0, 60);
+  }
+
+  supprimerCalque(id) {
+    if (!this.calques.delete(id)) return;
+    // les appareils survivent a leur calque : on les remet simplement a nu
+    for (const g of this.groupes) {
+      if (g.userData.spec?.calque === id) { g.userData.spec.calque = null; this._appliquerVisibilite(g); }
+    }
+    this.viewer.marquerOmbres();
+  }
+
+  basculerCalque(id) {
+    const c = this.calques.get(id);
+    if (!c) return;
+    c.visible = !c.visible;
+    for (const g of this.groupes) if (g.userData.spec?.calque === id) this._appliquerVisibilite(g);
+    this._t = 0; this.arbitrer();
+    this.viewer.marquerOmbres();
+  }
+
+  deplacerVers(uid, idCalque) {
+    const g = this._trouver(uid);
+    if (!g?.userData.spec) return;
+    g.userData.spec.calque = idCalque && this.calques.has(idCalque) ? idCalque : null;
+    this._appliquerVisibilite(g);
+    this.viewer.marquerOmbres();
+  }
+
+  /**
+   * Masquer n'est pas eteindre.
+   *
+   * Un appareil masque disparait de la vue mais continue d'eclairer — c'est
+   * ainsi qu'on cache un plafonnier qui gene le cadrage sans changer
+   * l'eclairage de la scene. Eteindre, a l'inverse, le laisse visible et lui
+   * retire sa lumiere. D5 distingue les deux, et il a raison : ce sont deux
+   * intentions differentes.
+   */
+  _appliquerVisibilite(g) {
+    const spec = g.userData.spec || {};
+    const calque = spec.calque ? this.calques.get(spec.calque) : null;
+    const calqueVisible = !calque || calque.visible;
+
+    if (g.userData.surface) g.userData.surface.visible = calqueVisible && !spec.masquee
+                                                      && spec.refletsVisibles !== false;
+    if (g.userData.source) g.userData.source.userData.interdit = !calqueVisible;
+  }
+
   _trouver(uid) {
     for (const g of this.groupes) if (g.userData.uid === uid) return g;
     return null;
@@ -479,13 +580,26 @@ export class Luminaires {
       return { uid: g.userData.uid ||= 'lum-' + (++Luminaires._compteur),
                nom: s.nom || noms[s.type] || 'Luminaire',
                type: s.type || 'rectangle', actif: s.actif !== false,
+               masquee: !!s.masquee, calque: s.calque || null,
                libre: !!g.userData.libre };
     });
   }
 
   lire(uid) {
     const g = this._trouver(uid);
-    return g ? { ...(g.userData.spec || {}) } : null;
+    if (!g) return null;
+    /* Arrondi a la lecture, pas au stockage.
+
+       Une position calculee par le gizmo vaut -1049,9999999999998 : juste,
+       mais illisible dans un champ de saisie, et la moindre reprise au
+       clavier propagerait le bruit. On arrondit ce qu'on montre. */
+    const net = (v, d = 2) => Math.round(v * 10 ** d) / 10 ** d;
+    const spec = g.userData.spec || {};
+    return { ...spec,
+             pos: (spec.pos || [0, 0, 0]).map(v => net(v, 1)),
+             rot: (spec.rot || [0, 0, 0]).map(v => net(v, 1)),
+             echelle: [g.scale.x, g.scale.y, g.scale.z].map(v => net(v, 3)),
+             cotes: this.cotes(uid) };
   }
 
   modifier(uid, patch) {
@@ -499,9 +613,61 @@ export class Luminaires {
     const s = g.userData.spec;
     if (patch.pos) g.position.set(s.pos[0] * echelle, s.pos[1] * echelle, s.pos[2] * echelle);
     if (patch.rot) g.rotation.set(s.rot[0] * DEG, s.rot[1] * DEG, s.rot[2] * DEG);
+    if (patch.echelle) g.scale.set(Math.max(0.01, s.echelle[0]),
+                                   Math.max(0.01, s.echelle[1]),
+                                   Math.max(0.01, s.echelle[2]));
+    if (patch.cotes) this.reglerCotes(uid, patch.cotes);
+    if (patch.masquee !== undefined || patch.calque !== undefined
+        || patch.refletsVisibles !== undefined) this._appliquerVisibilite(g);
     if (patch.actif !== undefined) { this._t = 0; this.arbitrer(); }
 
     this.viewer.marquerOmbres();
+  }
+
+  /**
+   * Redimensionne un appareil en saisissant ses cotes.
+   *
+   * On tape la dimension voulue plutot que de tirer une poignee : c'est plus
+   * juste et plus rapide sur un plan d'implantation, ou les dimensions sont
+   * connues. Le calcul passe par la boite englobante reelle, ce qui rend la
+   * methode independante du type d'appareil — un disque, un bandeau et un
+   * projecteur s'y plient de la meme facon.
+   */
+  reglerCotes(uid, cotes) {
+    const g = this._trouver(uid);
+    if (!g) return null;
+    const e = this.viewer.lib?.scale ?? 1;
+
+    // on mesure a l'echelle 1 : sinon chaque reglage se composerait au
+    // precedent et la valeur saisie ne serait jamais celle obtenue
+    const memoire = g.scale.clone();
+    g.scale.set(1, 1, 1);
+    g.updateMatrixWorld(true);
+    const boite = new THREE.Box3().setFromObject(g);
+    const brut = boite.getSize(new THREE.Vector3());
+
+    const facteur = [0, 1, 2].map(i => {
+      const voulu = Number(cotes?.[i]);
+      const nature = [brut.x, brut.y, brut.z][i];
+      if (!(voulu > 0) || !(nature > 1e-6)) return memoire.getComponent(i);
+      return (voulu * e) / nature;
+    });
+
+    g.scale.set(facteur[0], facteur[1], facteur[2]);
+    g.updateMatrixWorld(true);
+    this.noterTransformation(g);
+    this.viewer.marquerOmbres();
+    return this.cotes(uid);
+  }
+
+  /** Les dimensions actuelles, en unites de bibliotheque. */
+  cotes(uid) {
+    const g = this._trouver(uid);
+    if (!g) return null;
+    const e = this.viewer.lib?.scale ?? 1;
+    g.updateMatrixWorld(true);
+    const t = new THREE.Box3().setFromObject(g).getSize(new THREE.Vector3());
+    return [t.x / e, t.y / e, t.z / e].map(v => Math.round(v * 10) / 10);
   }
 
   supprimer(uid) {

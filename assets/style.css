@@ -392,7 +392,7 @@ body.viewonly .panel-foot.actions .btn-row,body.viewonly #btn-clear{display:none
    Il flotte à droite de la scène, en vis-à-vis du panneau de rendu : on
    règle un appareil en regardant ce qu'il éclaire, pas un formulaire. */
 .light-panel{
-  position:absolute;right:12px;top:64px;z-index:4;width:272px;
+  position:absolute;right:12px;top:64px;z-index:4;width:330px;
   background:rgba(21,26,33,.94);backdrop-filter:blur(12px);
   border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);
   overflow:hidden;

@@ -58,6 +58,7 @@ async function boot() {
       if (it) { Object.assign(it, patch); refreshSelectionPanel(); refreshDimensions(); scheduleSave(); }
     },
     onCommit: () => pushHistory(),
+    onLuminaire: () => app.rafraichirLumieres?.(),
     onQualite: (niveau, fps) => {
       // la machine ne suivait pas : on allege, et on le dit plutot que de
       // laisser croire a un rendu degrade sans raison
@@ -872,9 +873,21 @@ function wireLumieres() {
         toast('Cet appareil appartient à un bloc : supprimez le bloc.', true);
       } else if (selection === uid) selection = null;
     },
-    selectionner: (uid) => { selection = uid; },
+    selectionner: (uid) => {
+      selection = uid;
+      // selectionner dans la liste selectionne aussi dans la scene : le gizmo
+      // apparait, et l'appareil se deplace a la souris comme une machine
+      app.viewer.select(uid || null);
+    },
     selection: () => selection,
     cadrer: (uid) => app.viewer.luminaires.cadrer(uid),
+
+    calques: () => app.viewer.luminaires.calquesListe(),
+    creerCalque: (nom) => app.viewer.luminaires.creerCalque(nom),
+    renommerCalque: (id, nom) => app.viewer.luminaires.renommerCalque(id, nom),
+    supprimerCalque: (id) => app.viewer.luminaires.supprimerCalque(id),
+    basculerCalque: (id) => app.viewer.luminaires.basculerCalque(id),
+    deplacerVers: (uid, id) => app.viewer.luminaires.deplacerVers(uid, id),
   });
 
   const bascule = () => {

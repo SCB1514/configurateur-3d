@@ -551,6 +551,15 @@ export class Viewer {
     if (!obj) return;
     this.rendu?.signalerMouvement();
     this.marquerOmbres();
+
+    /* Un luminaire deplace au gizmo doit rendre compte de sa nouvelle
+       position : sans cela le panneau afficherait encore l'ancienne, et la
+       prochaine saisie au clavier le ferait bondir en arriere. */
+    if (obj.userData.luminaire) {
+      this.luminaires?.noterTransformation?.(obj);
+      this.hooks.onLuminaire?.();
+      return;
+    }
     const block = this.lib.block(obj.userData.blockId);
 
     // Déplacement de groupe.
@@ -594,6 +603,25 @@ export class Viewer {
      dernier désigné, mais tout déplacement s'applique à l'ensemble ; le
      cadre, lui, est unique et englobe le groupe.
      ============================== */
+  /* ══════════ ce qui se selectionne ══════════
+
+     Les machines vivent dans this.objects, que l'etat de la configuration
+     pilote. Les luminaires poses librement n'y sont PAS, et il ne faut
+     surtout pas les y mettre : la reconciliation d'etat les effacerait au
+     premier rechargement, puisqu'ils ne figurent pas dans la nomenclature.
+
+     On les joint donc au moment du clic, et nulle part ailleurs. */
+
+  _cibles() {
+    const l = this.luminaires?.objetsLibres?.() || [];
+    return l.length ? [...this.objects.values(), ...l] : [...this.objects.values()];
+  }
+
+  /** L'objet designe par un identifiant, machine ou luminaire. */
+  _objet(uid) {
+    return this.objects.get(uid) || this.luminaires?.objet?.(uid) || null;
+  }
+
   select(uid, additive = false) {
     if (!uid) this.selection = [];
     else if (!additive) this.selection = [uid];
@@ -601,7 +629,7 @@ export class Viewer {
     else this.selection = [...this.selection, uid];
 
     const dernier = this.selection[this.selection.length - 1];
-    const obj = dernier ? this.objects.get(dernier) : null;
+    const obj = dernier ? this._objet(dernier) : null;
     this.selected = obj || null;
 
     if (obj) {
@@ -928,7 +956,7 @@ export class Viewer {
   _dropPoint(ev) {
     this._setPointer(ev);
     this.ray.setFromCamera(this.pointer, this.camera);
-    const hits = this.ray.intersectObjects([...this.objects.values()], true);
+    const hits = this.ray.intersectObjects(this._cibles(), true);
     let x, y, z = 0, stacked = false, below = false;
     if (hits.length) {
       const h = hits[0];
@@ -995,7 +1023,7 @@ export class Viewer {
   pickAt(ev) {
     this._setPointer(ev);
     this.ray.setFromCamera(this.pointer, this.camera);
-    const hits = this.ray.intersectObjects([...this.objects.values()], true);
+    const hits = this.ray.intersectObjects(this._cibles(), true);
     return hits.length ? rootOf(hits[0].object, this.scene).userData.uid : null;
   }
 
@@ -1028,7 +1056,7 @@ export class Viewer {
     if (this.editable === false) return;
     this._setPointer(ev);
     this.ray.setFromCamera(this.pointer, this.camera);
-    const hits = this.ray.intersectObjects([...this.objects.values()], true);
+    const hits = this.ray.intersectObjects(this._cibles(), true);
     const additif = ev.ctrlKey || ev.shiftKey || ev.metaKey;
     if (hits.length) this.select(rootOf(hits[0].object, this.scene).userData.uid, additif);
     else if (!additif) this.select(null);
@@ -1188,7 +1216,7 @@ export class Viewer {
   boundsOf(uids) {
     const box = new THREE.Box3();
     for (const uid of uids) {
-      const obj = this.objects.get(uid);
+      const obj = this._objet(uid);
       if (obj) box.union(new THREE.Box3().setFromObject(obj));
     }
     return box.isEmpty() ? null : box;
