@@ -582,6 +582,24 @@ export class Rendu {
        Le fondu réclame lui-même des images : sans cela le rendu à la
        demande s'arrêterait à mi-chemin et figerait une occlusion à moitié
        appliquée. */
+    /* Les passes tiennent la camera qu'on leur a donnee A LEUR CONSTRUCTION.
+
+       Le mode plan echange la camera perspective contre une orthographique.
+       Le compositeur, lui, continuait de rendre avec l'ancienne : on basculait
+       en plan et l'image restait en perspective, ou revenait de travers. Il
+       faut donc la resynchroniser a chaque image — c'est une affectation, elle
+       ne coute rien, et elle rend la bascule incassable.
+
+       L'occlusion ambiante, elle, est coupee en plan. Ses calculs supposent
+       une projection perspective — ses uniformes de proche et de lointain
+       n'ont pas le meme sens en orthographique — et un plan de coupe
+       technique n'a de toute facon rien a faire d'un creux dans les angles. */
+    const cam = this.viewer.camera;
+    if (this._passes.rendu && this._passes.rendu.camera !== cam) {
+      this._passes.rendu.camera = cam;
+    }
+    const enPlan = !!this.viewer.modePlan;
+
     const t = performance.now();
     const immobile = forcer || t >= (this._bougeJusqua || 0);
 
@@ -609,8 +627,9 @@ export class Rendu {
 
     const ao = this._passes.ao;
     if (ao) {
-      ao.enabled = k > 0.02 && this.reglages.occlusion > 0.01;
+      ao.enabled = !enPlan && k > 0.02 && this.reglages.occlusion > 0.01;
       ao.blendIntensity = this.reglages.occlusion * k;
+      if (ao.enabled && ao.camera !== cam) ao.camera = cam;
     }
 
     // Le halo suit le même sort : treize passes plein écran valent bien

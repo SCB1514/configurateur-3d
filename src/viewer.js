@@ -398,8 +398,24 @@ export class Viewer {
     return false;
   }
 
+  /* Blindage de la boucle.
+
+     Une exception levee dans une image tuait tout ce qui suit : plus de
+     rendu, plus de gizmo, plus rien — et sans message, puisque l'appel
+     suivant de requestAnimationFrame etait deja programme mais que le corps
+     echouait a chaque tour. On l'a paye une fois, sur une seule ligne mal
+     placee. La boucle survit desormais, signale trois fois, puis se tait :
+     une image ratee vaut mieux qu'une application morte. */
   _loop = () => {
     requestAnimationFrame(this._loop);
+    try { this._image(); } catch (e) {
+      this._pannes = (this._pannes || 0) + 1;
+      if (this._pannes <= 3) console.error('Image ignoree :', e);
+      else if (this._pannes === 4) console.error('Erreurs repetees dans la boucle de rendu.');
+    }
+  };
+
+  _image() {
     this._animerCamera();
     /* OrbitControls sait dire s'il a bouge, mais son seuil est absolu et
        minuscule : il continue de signaler un fremissement bien apres que
@@ -512,7 +528,7 @@ export class Viewer {
   _detecterMouvement() {
     const p = this.camera.position, t = this.controls.target;
     if (!this._camPrec) {
-      this._camPrec = { p: p.clone(), t: t.clone(), fov: this.camera.fov };
+      this._camPrec = { p: p.clone(), t: t.clone(), fov: this._focale() };
       return;
     }
 
@@ -522,7 +538,7 @@ export class Viewer {
     const seuil = Math.max(p.distanceTo(t), 1) * 2e-4;
     const bouge = p.distanceTo(this._camPrec.p) > seuil
                || t.distanceTo(this._camPrec.t) > seuil
-               || Math.abs(this.camera.fov - this._camPrec.fov) > 1e-3;
+               || Math.abs(this._focale() - this._camPrec.fov) > 1e-3;
 
     if (!bouge) {
       // A l'arret, l'occlusion revient : il faut une image pour la montrer.
@@ -534,7 +550,21 @@ export class Viewer {
     this.rendu?.signalerMouvement();
     this._camPrec.p.copy(p);
     this._camPrec.t.copy(t);
-    this._camPrec.fov = this.camera.fov;
+    this._camPrec.fov = this._focale();
+  }
+
+  /**
+   * Une grandeur de cadrage valable pour les deux cameras.
+   *
+   * Une camera orthographique n'a pas de champ de vision : `fov` y vaut
+   * undefined, et toute comparaison avec undefined donne NaN. Le detecteur
+   * basculait alors en permanence du cote « ca bouge », et l'occlusion ne
+   * revenait jamais apres un passage par le plan. Le zoom joue le meme role
+   * pour l'orthographique.
+   */
+  _focale() {
+    return Number.isFinite(this.camera.fov) ? this.camera.fov
+         : (Number(this.camera.zoom) || 1) * 1000;
   }
 
   setLibrary(lib) {
@@ -1525,6 +1555,10 @@ export class Viewer {
   }
 
   fit(padding = 1.6, anime = true) {
+    /* Cadrer suppose un champ de vision : en plan il n'y en a pas, le calcul
+       de distance donne l'infini et la camera part hors du monde. On revient
+       donc en perspective avant de cadrer. */
+    if (this.modePlan) this.setModePlan(false);
     const b = this.bounds();
     if (!b) { this.setView('iso', anime); return; }
     const c = b.getCenter(new THREE.Vector3());
@@ -1535,6 +1569,9 @@ export class Viewer {
   }
 
   setView(kind, anime = true) {
+    // depuis le plan, changer de vue passe par la sortie dediee : elle
+    // conserve le point vise et l'etendue au lieu de tout recadrer
+    if (this.modePlan && kind !== 'plan') { this.quitterPlanVers(kind); return; }
     const b = this.bounds();
     const c = b ? b.getCenter(new THREE.Vector3()) : new THREE.Vector3(0, 0, 0.4);
     const r = b ? Math.max(b.getSize(new THREE.Vector3()).length() * 0.5, 0.8) : 2.5;
