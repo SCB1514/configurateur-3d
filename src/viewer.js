@@ -221,7 +221,7 @@ export class Viewer {
     this.scene.add(this.gizmo);
     this.editable = true;
     this.setTool('select');   // sélection par défaut (flèche)
-    this.setSnap(true);
+    this.setSnap(false);      // aimantation à la grille désactivée par défaut
 
     /* ---------- repères de connexion ---------- */
     this.magnet = true;

@@ -1230,11 +1230,18 @@ function wireBatiment() {
     cb.onchange = () => { app.batiment.snaps[cb.dataset.snap] = cb.checked; };
   });
 
+  // — guides de dessin (toggle)
+  $('#btn-guides').onchange = e => {
+    app.batiment.setGuides(e.target.checked);
+    toast(e.target.checked ? 'Guides activés' : 'Guides désactivés');
+  };
+
   // — barre de statut du tracé (longueur/angle + saisie de valeur)
   const etiquettes = {
     end: 'extrémité', mid: 'milieu', intersection: 'croisement',
     surMur: 'sur le mur', prolongation: 'prolongation',
     parallele: 'parallèle', perpendiculaire: 'perpendiculaire', ortho: 'ortho',
+    cloture: 'fermeture à angle droit',
     grille: 'grille', libre: 'libre',
   };
   app.batiment._onStatut = (info) => {
@@ -1902,7 +1909,6 @@ function wireUI() {
     toast(on ? 'Magnétisme des points d\'insertion activé' : 'Magnétisme désactivé');
   };
 
-  $('#btn-snap').classList.add('on');
   $('#btn-snap').onclick = e => {
     const on = !app.viewer.snap;
     app.viewer.setSnap(on);

@@ -1,6 +1,7 @@
 import * as THREE from '../vendor/three/three.module.js';
-import { PlanGraph, add, scale, normalize, perp, cross, dist, sub, dot } from './core/topologie.js';
+import { PlanGraph, add, scale, normalize, perp, cross, dist, sub, dot, lineIntersect } from './core/topologie.js';
 import { snapOsnap, metresParPixel } from './core/osnap.js';
+import { Reperage } from './core/reperage.js';
 import { Brush, Evaluator, SUBTRACTION } from '../vendor/three/addons/csg/index.js';
 
 /* ============================================================
@@ -139,6 +140,7 @@ class Etat {
   surMove() {}
   surUp() {}
   surKey() {}
+  surKeyUp() {}
 }
 
 /** Repos : en vue 3D (ou plan), on peut saisir les poignées de nœuds pour
@@ -184,6 +186,7 @@ class EtatMur extends Etat {
     this._dragBouge = false;
     this._forme = null;                  // { type:'rectangle'|'cercle', a/c }
     this._marqueeStart = null;           // origine de la fenêtre de sélection
+    this._dernierPoint = null;           // dernier point survolé (rééval Maj)
     this.b.setMurSelectionne(null);      // pas de poignées pendant le tracé
     this.b.group.visible = false;
     this.b._apercu.visible = true;
@@ -241,7 +244,12 @@ class EtatMur extends Etat {
       else this.b._majCurseur({ x: p.x, y: p.y, type: 'libre' });
       return;
     }
-    const s = this.b._snap(p, ev.shiftKey);
+    this._dernierPoint = p;
+    this._majApercu(p, ev.shiftKey);
+  }
+  /** Met à jour l'aperçu de dessin (curseur, ligne, cote) pour un point. */
+  _majApercu(p, shift) {
+    const s = this.b._snap(p, shift);
     this.b._majCurseur(s);
     if (this._forme) {
       this.b._majFormeApercu(this._forme, s);
@@ -338,12 +346,17 @@ class EtatMur extends Etat {
     // polyligne
     const etaitSansAncre = !this.b._ancre;
     const cible = this.b._resoudreSnap(s);
+    if (etaitSansAncre) {
+      this.b._pointDepart = cible;
+      this.b._chaine = [];
+    }
     if (this.b._ancre && cible !== this.b._ancre) {
       const wid = this.b.graph.addWall(this.b._ancre, cible, {
         thickness: this.b.epaisseur, height: this.b.hauteur, elevation: this.b.elevation,
       });
       if (wid) {
         this.b.graph.intersectAndSplit(wid);
+        this.b._chaine.push(wid);
         this.b._dernierMur = wid;
       }
     }
@@ -354,6 +367,11 @@ class EtatMur extends Etat {
     this.b._onChange();
   }
   surKey(e) {
+    if (e.key === 'Shift') {
+      // Maj enfoncé : on réévalue l'aperçu SANS bouger la souris (force la perpendiculaire)
+      if (!this.b._modeEdition && this._dernierPoint) this._majApercu(this._dernierPoint, true);
+      return;
+    }
     if (e.key === 'Escape') {
       this.b.finirTrait();
       this.b._finirSelection();
@@ -364,6 +382,11 @@ class EtatMur extends Etat {
     } else if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault();
       this.b._supprimerSelection();
+    }
+  }
+  surKeyUp(e) {
+    if (e.key === 'Shift') {
+      if (!this.b._modeEdition && this._dernierPoint) this._majApercu(this._dernierPoint, false);
     }
   }
 }
@@ -463,6 +486,9 @@ export class Batiment {
     // repères d'accrochage en direct (glyphes + ligne de guidage)
     this._glyphes = {};
     this._guideLigne = null;
+    /* Le reperage intelligent : il repond a « a quoi suis-je aligne ? »,
+       la question que les accrochages ne posent pas. Voir core/reperage.js. */
+    this.reperage = new Reperage();
     this._initMarqueursSnap();
 
     this._ancre = null;
@@ -470,6 +496,8 @@ export class Batiment {
     this._ligne = null;
     this._curseur = null;
     this._dimension = null;
+    this._pointDepart = null;    // point de départ de la chaîne (fermeture)
+    this._chaine = [];           // murs de la chaîne en cours
     this._dernierMur = null;
     this._typeOuverture = 'door';
     this._selection = [];         // liste de { type:'node'|'wall', id }
@@ -493,8 +521,9 @@ export class Batiment {
     this._murs3D = [];           // maillages 3D des murs (sélection)
     this.snaps = {               // accrochages actifs (panneau à cocher)
       end: true, mid: true, intersection: true, surMur: true, prolongation: true,
-      parallele: true, perpendiculaire: true, ortho: true, grille: true,
+      parallele: false, perpendiculaire: false, ortho: false, grille: false,
     };
+    this.guides = true;           // système de GUIDES (lignes de repérage) activé
     this._longueurContrainte = null;   // longueur saisie au clavier (m)
 
     this._etats = {
@@ -509,10 +538,12 @@ export class Batiment {
     this._surMove = e => this._etat.surMove(e);
     this._surUp = e => this._etat.surUp(e);
     this._surKey = e => this._etat.surKey(e);
+    this._surKeyUp = e => this._etat.surKeyUp(e);
     c.addEventListener('pointerdown', this._surDown, true);
     c.addEventListener('pointermove', this._surMove, true);
     c.addEventListener('pointerup', this._surUp, true);
     addEventListener('keydown', this._surKey);
+    addEventListener('keyup', this._surKeyUp);
   }
 
   get vide() { return this.graph.walls.size === 0; }
@@ -538,6 +569,14 @@ export class Batiment {
     this._onStatut?.(null);
   }
   get modeEdition() { return this._modeEdition; }
+  /** Active/désactive le système de GUIDES (repérage intelligent). */
+  setGuides(on) {
+    this.guides = !!on;
+    if (!on) this.reperage.vider();
+    this.finirTrait();
+    this._onStatut?.(null);
+  }
+  get guidesActifs() { return this.guides; }
   arreter() {
     this.finirTrait();
     this._definirEtat('repos');       // EtatMur.quitter génère le 3D et le montre
@@ -546,6 +585,8 @@ export class Batiment {
   }
   finirTrait() {
     this._ancre = null;
+    this._pointDepart = null;
+    this._chaine = [];
     this._ligne = this._retirerApercu(this._ligne);
   }
 
@@ -575,36 +616,122 @@ export class Batiment {
   }
 
   /** Accrochage, par priorité décroissante (résout les conflits) :
+   *    0. FERMETURE à angle droit (on pointe le point de départ de la chaîne) ;
+   *    0.5 PIED / DIRECTION perpendiculaire au mur proche (Maj = forçage) ;
    *    1. points nodaux (Extrémité / Milieu / Intersection) ;
-   *    2. PIED de la perpendiculaire depuis l'ancre sur le mur cible ;
-   *    3. projection sur un mur (Sur-mur) et prolongation ;
-   *    4. directions (ortho / parallèle / perpendiculaire) + longueur ;
-   *    5. grille. */
+   *    2. projection sur un mur (Sur-mur) et prolongation ;
+   *    3. directions (ortho / parallèle / perpendiculaire) + longueur ;
+   *    4. grille. */
   _snap(p, ortho = false) {
     const tol = this._tolerancePixels(p, 15);
     const os = snapOsnap(p, this.graph, tol);
 
+    /* Acquisition des points de reference.
+
+       Survoler un point d'accrochage sans cliquer, le temps d'un battement,
+       le retient comme reference. C'est le geste de SmartTrack : on ne
+       declare rien, on regarde, et le logiciel comprend a quoi on pense. */
+    this.reperage.actif = !!this.guides;
+    if (os && ['end', 'mid', 'intersection'].includes(os.type)) {
+      const dirs = [];
+      for (const w of this.graph.walls.values()) {
+        const A = this.graph.node(w.a), B = this.graph.node(w.b);
+        if (dist(os, A) < 1e-6 || dist(os, B) < 1e-6) dirs.push(this.graph.wallFrame(w).d);
+      }
+      this.reperage.survol(os, dirs);
+    } else {
+      this.reperage.survol(null);
+    }
+
+    /* Le repere passe APRES les points reels et AVANT les directions.
+
+       Un point qui existe dans le modele l'emporte toujours sur un point
+       deduit : c'est la regle de tous les logiciels de CAO, et elle evite
+       qu'une ligne de suivi vous arrache a l'extremite que vous visiez.
+       Mais un croisement de lignes de suivi vaut mieux qu'un simple ortho,
+       parce qu'il designe un point unique la ou l'ortho laisse glisser. */
+    if (this.guides && !(os && ['end', 'mid', 'intersection'].includes(os.type)
+                         && this.snaps[os.type])) {
+      const r = this.reperage.candidat(p, tol);
+      if (r) return r;
+    }
+
+    // 0. fermeture à angle droit : en pointant le point de départ, on propose le
+    //    point qui referme le polygone en formant deux angles droits (rectangle).
+    if (this.guides && this._ancre && this._pointDepart && this._chaine.length >= 2) {
+      const a = this.graph.node(this._pointDepart);
+      if (dist(p, a) < tol * 1.6) {
+        const premier = this.graph.walls.get(this._chaine[0]);
+        const dernier = this.graph.walls.get(this._chaine[this._chaine.length - 1]);
+        if (premier && dernier) {
+          const d1 = this.graph.wallFrame(premier).d;
+          const d2 = this.graph.wallFrame(dernier).d;
+          const c = this.graph.node(this._ancre);
+          // D = intersection de (C, perp(d2)) et (A, perp(d1))
+          const D = lineIntersect(c, perp(d2), a, perp(d1));
+          if (D) return { x: D.x, y: D.y, type: 'cloture', depart: a, courant: c };
+        }
+      }
+    }
+
+    // 0.5 perpendiculaire au mur proche : PROPOSÉE quand on vise ~90°, FORCÉE
+    //     avec Maj. S'applique à tout le mur (segment, milieu, extension) et
+    //     prime sur l'extension ET sur le point snap du milieu. Le forçage Maj
+    //     est INDÉPENDANT de la case « perpendiculaire ».
+    //     Deux formes :
+    //       • ancre HORS de la ligne du mur → PIED (projection de l'ancre sur la
+    //         ligne infinie) : sur le segment = jonction en T, sur l'extension =
+    //         nœud libre. C'est la « perpendiculaire à la ligne d'extension » ;
+    //       • ancre SUR la ligne → DIRECTION perpendiculaire (le mur part à 90°).
+    if (this.guides && this._ancre && (this.snaps.perpendiculaire || ortho)) {
+      const a = this.graph.node(this._ancre);
+      const dirAncre = normalize(sub(p, a));
+      let meilleurMur = null, meilleureD = tol * 2.5;
+      for (const w of this.graph.walls.values()) {
+        const f = this.graph.wallFrame(w);
+        const t = dot(sub(p, f.A), f.d);
+        const proj = add(f.A, scale(f.d, t));
+        const d = dist(p, proj);
+        if (d < meilleureD) { meilleureD = d; meilleurMur = w; }
+      }
+      if (meilleurMur) {
+        const f = this.graph.wallFrame(meilleurMur);
+        const visePerp = Math.abs(dot(dirAncre, f.d)) < 0.7;
+        if (ortho || (this.snaps.perpendiculaire && visePerp)) {
+          // pied de l'ancre sur la ligne infinie du mur
+          const tA = dot(sub(a, f.A), f.d);
+          const sA = tA / f.len;
+          const pied = add(f.A, scale(f.d, tA));
+          if (dist(a, pied) > 1e-6) {
+            // ancre hors de la ligne : on accroche le PIED.
+            // Sur le segment → jonction en T (splitWall) ; sur l'extension →
+            // nœud libre (pas de wallId).
+            if (sA > 1e-6 && sA < 1 - 1e-6) {
+              return { x: pied.x, y: pied.y, type: 'perpendiculaire', wallId: meilleurMur.id, s: sA };
+            }
+            return { x: pied.x, y: pied.y, type: 'perpendiculaire' };
+          }
+          // ancre sur la ligne : on force la DIRECTION perpendiculaire
+          const wa = Math.atan2(f.d.y, f.d.x);
+          const r = Math.hypot(p.x - a.x, p.y - a.y);
+          let angle = wa + Math.PI / 2;
+          let delta = angle - Math.atan2(p.y - a.y, p.x - a.x);
+          delta = ((delta % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+          if (delta > Math.PI) delta -= 2 * Math.PI;
+          if (Math.abs(delta) > Math.PI / 2) angle += Math.PI;
+          const L = this._longueurContrainte;
+          const d2 = (L && L > 0) ? L : r;
+          return { x: a.x + d2 * Math.cos(angle), y: a.y + d2 * Math.sin(angle), type: 'perpendiculaire' };
+        }
+      }
+    }
+
     // 1. points nodaux
     if (os && ['end', 'mid', 'intersection'].includes(os.type) && this.snaps[os.type]) return os;
 
-    // 2. perpendiculaire : pied depuis l'ancre, prime sur la projection « sur-mur »
-    if (this._ancre && this.snaps.perpendiculaire) {
-      const a = this.graph.node(this._ancre);
-      let best = null, bestD = tol * 2;
-      for (const w of this.graph.walls.values()) {
-        const f = this.graph.wallFrame(w);
-        const t = dot(sub(a, f.A), f.d);
-        const s = t / f.len;
-        if (s < -1e-6 || s > 1 + 1e-6) continue;   // pied hors du segment
-        const pied = add(f.A, scale(f.d, t));
-        const d = dist(p, pied);
-        if (d < bestD) { bestD = d; best = { x: pied.x, y: pied.y, wallId: w.id, s }; }
-      }
-      if (best) return { ...best, type: 'perpendiculaire' };
-    }
-
-    // 3. sur-mur / prolongation (projection du curseur)
-    if (os && this.snaps[os.type]) return os;
+    // 2. sur-mur / prolongation (projection du curseur)
+    //    — la prolongation est un GUIDE : désactivée quand les guides sont coupés
+    if (os && this.snaps[os.type] && (os.type !== 'prolongation' || this.guides)) return os;
 
     // 4. directions + longueur contrainte
     if (this._ancre) {
@@ -615,7 +742,7 @@ export class Batiment {
         let angle = Math.atan2(dy, dx);
         let type = 'libre';
         let guide = false;
-        if (ortho || this.snaps.ortho || this.snaps.parallele || this.snaps.perpendiculaire) {
+        if (this.guides && (ortho || this.snaps.ortho || this.snaps.parallele || this.snaps.perpendiculaire)) {
           const candidats = [];
           if (ortho || this.snaps.ortho) for (let k = 0; k < 4; k++) candidats.push({ a: k * Math.PI / 2, t: 'ortho' });
           if (!ortho) {
@@ -626,9 +753,9 @@ export class Batiment {
               if (this.snaps.perpendiculaire) candidats.push({ a: wa + Math.PI / 2, t: 'perpendiculaire', w });
             }
           }
-          const seuil = ortho ? Math.PI : (8 * Math.PI) / 180;
+          const seuil = ortho ? Math.PI : (45 * Math.PI) / 180;   // couverture 360° (suivi polaire 90°)
           const PRIO = { ortho: 0, parallele: 1, perpendiculaire: 2 };
-          let meilleur = null, meilleurEcart = seuil;
+          let meilleur = null, meilleurEcart = seuil + 1e-6;   // inclut la frontière à 45°
           for (const c of candidats) {
             let ecart = Math.abs(angle - c.a) % Math.PI;
             if (ecart > Math.PI / 2) ecart = Math.PI - ecart;
@@ -676,7 +803,7 @@ export class Batiment {
     if (s.type === 'perpendiculaire' && s.wallId) {
       return this.graph.splitWall(s.wallId, s.s);   // jonction en T sur le mur cible
     }
-    // prolongation / parallele / ortho / grille : nœud libre
+    // cloture / prolongation / parallele / ortho / grille : nœud libre
     return this.graph.addNode(s.x, s.y);
   }
 
@@ -771,7 +898,11 @@ export class Batiment {
     tracer('parallele', (ctx, m, s) => { ctx.beginPath(); ctx.moveTo(m - s, m - 8); ctx.lineTo(m + s, m - 8); ctx.moveTo(m - s, m + 8); ctx.lineTo(m + s, m + 8); ctx.stroke(); });
     tracer('perpendiculaire', (ctx, m, s) => { ctx.beginPath(); ctx.moveTo(m - s, m + s); ctx.lineTo(m - s, m - s); ctx.lineTo(m + s, m - s); ctx.moveTo(m - s + 10, m - s + 10); ctx.lineTo(m - s + 10, m - s + 18); ctx.lineTo(m - s + 18, m - s + 18); ctx.stroke(); });
     tracer('ortho', (ctx, m, s) => { ctx.beginPath(); ctx.moveTo(m - s, m); ctx.lineTo(m + s, m); ctx.moveTo(m, m - s); ctx.lineTo(m, m + s); ctx.stroke(); });
+    tracer('cloture', (ctx, m, s) => { ctx.beginPath(); ctx.moveTo(m - s, m - s); ctx.lineTo(m - s, m + s); ctx.lineTo(m + s, m + s); ctx.stroke(); });  // angle droit fermant
     tracer('grille', (ctx, m, s) => { ctx.beginPath(); ctx.arc(m, m, s * 0.7, 0, 2 * Math.PI); ctx.stroke(); });
+    // reperage : un chevron pour l'alignement, une etoile pour le croisement
+    tracer('alignement', (ctx, m, s) => { ctx.beginPath(); ctx.moveTo(m - s, m - s * 0.5); ctx.lineTo(m, m); ctx.lineTo(m - s, m + s * 0.5); ctx.stroke(); });
+    tracer('croisement', (ctx, m, s) => { ctx.beginPath(); ctx.moveTo(m - s, m); ctx.lineTo(m + s, m); ctx.moveTo(m, m - s); ctx.lineTo(m, m + s); ctx.moveTo(m - s * 0.7, m - s * 0.7); ctx.lineTo(m + s * 0.7, m + s * 0.7); ctx.moveTo(m + s * 0.7, m - s * 0.7); ctx.lineTo(m - s * 0.7, m + s * 0.7); ctx.stroke(); });
 
     this._guideLigne = new THREE.Line(new THREE.BufferGeometry(),
       new THREE.LineDashedMaterial({ color: 0x00ff88, depthTest: false, transparent: true, dashSize: 0.16, gapSize: 0.1 }));
@@ -802,17 +933,57 @@ export class Batiment {
         sp.scale.set(echelle, echelle, 1);
       }
     }
-    // ligne en pointillés : depuis l'extrémité du mur (prolongation) ou depuis
-    // l'ancre de tracé (parallèle / perpendiculaire / ortho).
-    let origine = null;
-    if (s.type === 'prolongation' && s.ancre) origine = s.ancre;
+    // ligne en pointillés : depuis l'extrémité du mur (prolongation), depuis
+    // l'ancre de tracé (parallèle / perpendiculaire / ortho), ou les deux
+    // branches de la fermeture à angle droit (cloture).
+    /* Les lignes de suivi du reperage : une par rayon ayant produit le
+       candidat, tracee de part et d'autre de sa reference. C'est cette
+       ligne qui explique le point propose — sans elle, le curseur
+       s'accroche a un endroit dont rien ne dit pourquoi. */
+    if (s.type === 'alignement' || s.type === 'croisement') {
+      const pts = [];
+      for (const seg of Reperage.segments(s, this.viewer.gridStep * 200 || 60)) {
+        pts.push(new THREE.Vector3(seg.a.x, seg.a.y, 0.04),
+                 new THREE.Vector3(seg.b.x, seg.b.y, 0.04));
+      }
+      this._guideLigne.geometry.dispose();
+      this._guideLigne.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+      this._guideLigne.computeLineDistances();
+      this._guideLigne.visible = pts.length > 0;
+      return;
+    }
+
+    let origine = null, extension = false;
+    if (s.type === 'prolongation' && s.ancre) { origine = s.ancre; extension = true; }
+    else if (s.type === 'cloture' && s.courant && s.depart) {
+      // deux traits : l'ancre → point de fermeture → point de départ
+      this._guideLigne.geometry.dispose();
+      this._guideLigne.geometry = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(s.courant.x, s.courant.y, 0.04),
+        new THREE.Vector3(s.x, s.y, 0.04),
+        new THREE.Vector3(s.depart.x, s.depart.y, 0.04),
+      ]);
+      this._guideLigne.computeLineDistances();
+      this._guideLigne.visible = true;
+      return;
+    }
     else if ((s.type === 'parallele' || s.type === 'perpendiculaire' || s.type === 'ortho') && this._ancre) {
       origine = this.graph.node(this._ancre);
     }
     if (origine) {
+      const a = new THREE.Vector3(origine.x, origine.y, 0.04);
+      const b = new THREE.Vector3(s.x, s.y, 0.04);
+      let points;
+      if (extension) {
+        // la ligne d'extension dépasse le point visé, comme un tracking AutoCAD
+        const d = b.clone().sub(a);
+        const depassement = d.clone().normalize().multiplyScalar(Math.max(d.length() * 0.5, this.viewer.gridStep * 2));
+        points = [a.clone().sub(depassement), b.clone().add(depassement)];
+      } else {
+        points = [a, b];
+      }
       this._guideLigne.geometry.dispose();
-      this._guideLigne.geometry = new THREE.BufferGeometry()
-        .setFromPoints([new THREE.Vector3(origine.x, origine.y, 0.04), new THREE.Vector3(s.x, s.y, 0.04)]);
+      this._guideLigne.geometry = new THREE.BufferGeometry().setFromPoints(points);
       this._guideLigne.computeLineDistances();
       this._guideLigne.visible = true;
     } else {
