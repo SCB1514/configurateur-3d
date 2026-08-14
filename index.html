@@ -135,6 +135,13 @@
         <label class="bp-field"><span>Épaisseur</span><input type="number" id="murs-epaisseur" min="0.05" step="0.01" value="0.15" /><em>m</em></label>
         <label class="bp-field"><span>Hauteur</span><input type="number" id="murs-hauteur" min="1" step="0.1" value="2.7" /><em>m</em></label>
         <label class="bp-field"><span>Élévation</span><input type="number" id="murs-elevation" step="0.1" value="0" /><em>m</em></label>
+        <label class="bp-field"><span>Référence</span>
+          <select id="murs-justification" title="Ligne de référence des nouveaux murs">
+            <option value="centre">Axe central</option>
+            <option value="interieur">Nu intérieur</option>
+            <option value="exterieur">Nu extérieur</option>
+          </select>
+        </label>
       </section>
 
       <section class="bp-section">
@@ -170,22 +177,26 @@
       </section>
 
       <section class="bp-section">
-        <h4>Outils</h4>
-        <div class="bp-tools">
-          <button class="btn" id="btn-submode-dessin" data-submode="dessin">Dessiner</button>
-          <button class="btn" id="btn-submode-edition" data-submode="edition">Éditer</button>
+        <h4>Dessiner</h4>
+        <div class="bp-tools bp-tools-icones">
+          <button class="bp-tool" id="btn-outil-polyligne" data-outil="polyligne" title="Mur (polyligne)"><svg viewBox="0 0 24 24"><path d="M5 19 L9 10 L15 13 L19 5"/></svg></button>
+          <button class="bp-tool" id="btn-outil-rectangle" data-outil="rectangle" title="Rectangle"><svg viewBox="0 0 24 24"><rect x="5" y="6" width="14" height="12"/></svg></button>
+          <button class="bp-tool" id="btn-outil-cercle" data-outil="cercle" title="Cercle"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/></svg></button>
         </div>
-        <div class="bp-tools" id="bp-outils-dessin">
-          <button class="btn" id="btn-mode-polyligne" data-mode="polyligne">Polyligne</button>
-          <button class="btn" id="btn-mode-rectangle" data-mode="rectangle">Rectangle</button>
-          <button class="btn" id="btn-mode-cercle" data-mode="cercle">Cercle</button>
+        <h4>Menuiseries</h4>
+        <div class="bp-tools bp-tools-icones">
+          <button class="bp-tool" id="btn-outil-porte" data-outil="porte" title="Porte"><svg viewBox="0 0 24 24"><path d="M7 4 V20"/><path d="M7 5 L15 17"/><path d="M7 5 A8 8 0 0 0 15 13"/></svg></button>
+          <button class="bp-tool" id="btn-outil-fenetre" data-outil="fenetre" title="Fenêtre"><svg viewBox="0 0 24 24"><rect x="4.5" y="6.5" width="15" height="11"/><path d="M4.5 12 H19.5"/></svg></button>
         </div>
-        <div class="bp-tools">
-          <button class="btn" id="btn-murs-porte">Porte</button>
-          <button class="btn" id="btn-murs-fenetre">Fenêtre</button>
+        <h4>Modifier</h4>
+        <div class="bp-tools bp-tools-icones">
+          <button class="bp-tool" id="btn-outil-selection" data-outil="selection" title="Sélectionner / Éditer"><svg viewBox="0 0 24 24"><path d="M5 4 L19 12 L12 13 L9 19 Z"/></svg></button>
+          <button class="bp-tool" id="btn-outil-scinder" data-outil="scinder" title="Scinder"><svg viewBox="0 0 24 24"><path d="M4 12 H9.5 M14.5 12 H20"/><path d="M12 9.5 V14.5"/></svg></button>
+          <button class="bp-tool" id="btn-outil-ajuster" data-outil="ajuster" title="Ajuster / Prolonger"><svg viewBox="0 0 24 24"><path d="M5 5 H13 V19"/></svg></button>
+          <button class="bp-tool" id="btn-outil-aligner" data-outil="aligner" title="Aligner (parallèle)"><svg viewBox="0 0 24 24"><path d="M4 7 H20"/><path d="M4 17 H20"/><path d="M12 7 V17" stroke-dasharray="3 3"/></svg></button>
+          <button class="bp-tool" id="btn-outil-decaler" data-outil="decaler" title="Décaler"><svg viewBox="0 0 24 24"><path d="M3 8 H14"/><path d="M3 17 H14"/><path d="M16 9 V16"/><path d="M14 12 H16"/></svg></button>
         </div>
-        <p class="bp-hint" id="bp-hint-dessin">Dessin : accrochages (extrémités, milieux, croisements, prolongation, perpendiculaire, parallèle), <kbd>Maj</kbd> = ortho, <kbd>Échap</kbd> coupe.</p>
-        <p class="bp-hint hidden" id="bp-hint-edition">Édition : cliquez un mur ou un nœud pour le sélectionner, glissez un nœud pour le déplacer, <kbd>Suppr</kbd> efface.</p>
+        <p class="bp-hint" id="bp-hint-outil">Choisissez un outil puis agissez sur le plan. <kbd>Échap</kbd> quitte l'outil, <kbd>Ctrl</kbd>+clic pose un repère, <kbd>Suppr</kbd> efface la sélection.</p>
       </section>
     </div>
 
@@ -414,6 +425,14 @@
       <div class="field-row">
         <label>Élévation (m)</label>
         <input type="number" id="wall-elevation" step="0.1" />
+      </div>
+      <div class="field-row">
+        <label>Référence</label>
+        <select id="wall-justification">
+          <option value="centre">Axe central</option>
+          <option value="interieur">Nu intérieur</option>
+          <option value="exterieur">Nu extérieur</option>
+        </select>
       </div>
       <div class="btn-row">
         <button class="btn" id="btn-wall-dup" title="Dupliquer ce mur">Dupliquer</button>

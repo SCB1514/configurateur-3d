@@ -1240,36 +1240,55 @@ function wireBatiment() {
       ? 'Bâtiment généré (murs + dalles + plafonds)'
       : 'Murs générés — aucune pièce fermée');
   };
-  $('#btn-murs-porte').onclick = () => app.batiment.insererPorte();
-  $('#btn-murs-fenetre').onclick = () => app.batiment.insererFenetre();
   $('#btn-murs-vider').onclick = () => {
     app.batiment.vider();
     majStats();
     toast('Bâtiment effacé');
   };
+  $('#murs-justification').onchange = e =>
+    app.batiment.setParametres({ justification: e.target.value });
+  // le toast des outils topologiques (scinder/ajuster/aligner/décaler) : leur
+  // retour ('Coupe impossible : traverse une ouverture', etc.) passe par ici.
+  app.batiment._onMessage = (texte, err) => toast(texte, err);
 
-  // — sous-modes du tracé : dessiner / éditer
-  const basculerSousMode = (edition) => {
-    if (app.batiment.etatNom !== 'mur') app.batiment.tracerMurs();
-    app.batiment.setModeEdition(edition);
-    $$('[data-submode]').forEach(b => b.classList.toggle('on', (b.dataset.submode === 'edition') === edition));
-    $('#bp-outils-dessin').classList.toggle('hidden', edition);
-    $('#bp-hint-dessin').classList.toggle('hidden', edition);
-    $('#bp-hint-edition').classList.toggle('hidden', !edition);
+  // — barre d'outils à icônes (style Revit) : un seul outil actif à la fois.
+  //    L'outil actif se DÉDUIT de l'état de la machine (mur/topo/porte) et de ses
+  //    sous-modes, plutôt que d'être mémorisé à part — une seule source de vérité.
+  const outilActif = () => {
+    const b = app.batiment;
+    if (b.etatNom === 'topo') return b._outilTopo;                 // scinder | ajuster | aligner | decaler
+    if (b.etatNom === 'porte') return b._typeOuverture === 'door' ? 'porte' : 'fenetre';
+    if (b.etatNom === 'mur') return b._modeEdition ? 'selection' : b._modeDessin;
+    return null;
   };
-  $$('[data-submode]').forEach(btn => {
-    btn.onclick = () => basculerSousMode(btn.dataset.submode === 'edition');
-  });
-  basculerSousMode(false);
-
-  // — modes de dessin (polyligne / rectangle / cercle)
-  $$('[data-mode]').forEach(btn => {
-    btn.onclick = () => {
-      app.batiment._modeDessin = btn.dataset.mode;
-      $$('[data-mode]').forEach(b => b.classList.toggle('on', b === btn));
-    };
-  });
-  $('#btn-mode-polyligne').classList.add('on');
+  const majOutilsUI = () => {
+    const actif = outilActif();
+    $$('[data-outil]').forEach(btn => btn.classList.toggle('on', btn.dataset.outil === actif));
+  };
+  const activerOutil = (nom) => {
+    const b = app.batiment;
+    // re-clic sur l'outil déjà actif → on quitte (retour au repos)
+    if (outilActif() === nom) { b.arreter(); majOutilsUI(); return; }
+    if (nom === 'polyligne' || nom === 'rectangle' || nom === 'cercle') {
+      if (b.etatNom !== 'mur') b.tracerMurs();
+      b.setModeEdition(false);
+      b._modeDessin = nom;
+    } else if (nom === 'selection') {
+      if (b.etatNom !== 'mur') b.tracerMurs();
+      b.setModeEdition(true);
+    } else if (nom === 'porte') b.insererPorte();
+    else if (nom === 'fenetre') b.insererFenetre();
+    else if (nom === 'scinder') b.scinderMur();
+    else if (nom === 'ajuster') b.ajusterMurs();
+    else if (nom === 'aligner') b.alignerMurs();
+    else if (nom === 'decaler') b.decalerMurs();
+    majOutilsUI();
+  };
+  $$('[data-outil]').forEach(btn => { btn.onclick = () => activerOutil(btn.dataset.outil); });
+  // chaque changement d'état (y compris Échap, fermeture du panneau) resynchronise
+  // les icônes — sans cela, sortir d'un outil laisserait son icône allumée.
+  app.batiment._onEtat = () => majOutilsUI();
+  majOutilsUI();
 
   // — accrochages (cases à cocher)
   $$('[data-snap]').forEach(cb => {
@@ -1294,6 +1313,7 @@ function wireBatiment() {
     const barre = $('#draft-status');
     if (!info) { barre.classList.add('hidden'); return; }
     barre.classList.remove('hidden');
+    if (info.type === 'topo') { $('#draft-info').textContent = info.texte; return; }
     if (info.type === 'rectangle') $('#draft-info').textContent = `${info.largeur.toFixed(2)} × ${info.hauteur.toFixed(2)} m`;
     else if (info.type === 'cercle') $('#draft-info').textContent = `rayon ${info.rayon.toFixed(2)} m`;
     else $('#draft-info').textContent = `${info.long.toFixed(2)} m · ${info.angle.toFixed(0)}°${info.type && etiquettes[info.type] ? ' · ' + etiquettes[info.type] : ''}`;
@@ -1577,6 +1597,7 @@ function onSelect(uid, selection) {
     $('#wall-thickness').value = w.thickness;
     $('#wall-height').value = w.height;
     $('#wall-elevation').value = w.elevation || 0;
+    $('#wall-justification').value = w.justification || 'centre';
   }
   refreshSelectionPanel();
   refreshDimensions();
@@ -1872,6 +1893,7 @@ function wireUI() {
   $('#wall-thickness').onchange = e => majMur({ thickness: Math.max(0.05, Number(e.target.value)) });
   $('#wall-height').onchange = e => majMur({ height: Math.max(1, Number(e.target.value)) });
   $('#wall-elevation').onchange = e => majMur({ elevation: Number(e.target.value) || 0 });
+  $('#wall-justification').onchange = e => majMur({ justification: e.target.value });
   $('#btn-wall-del').onclick = () => deleteSelected();
   $('#btn-wall-dup').onclick = () => {
     if (!app.selectedWall) return;

@@ -224,15 +224,16 @@ export class Reperage {
   /**
    * Le meilleur candidat de repérage sous le curseur, ou null.
    *
-   * L'ordre importe : un CROISEMENT de deux lignes est un point unique,
-   * bien plus informatif qu'un simple alignement où l'on reste libre de
-   * glisser. Il passe donc devant, et avec une tolérance plus large — on
-   * pardonne davantage à qui vise un point qu'à qui vise une droite.
+   * L'ordre importe : un CROISEMENT de deux lignes ou le MILIEU de deux
+   * références est un point unique, bien plus informatif qu'un simple
+   * alignement où l'on reste libre de glisser. Ils passent donc devant,
+   * et avec une tolérance plus large — on pardonne davantage à qui vise
+   * un point qu'à qui vise une droite.
    */
   candidat(p, tol) {
     if (!this.actif || !this.points.length) return null;
 
-    // ── croisements de deux rayons issus de références différentes
+    // ── points uniques : croisements de rayons ET milieu de deux références
     if (this.croisements) {
       let meilleur = null, meilleureD = tol * 1.6;
       for (let i = 0; i < this.points.length; i++) {
@@ -248,6 +249,20 @@ export class Reperage {
                              lignes: [{ o: this.points[i], d: d1 }, { o: this.points[j], d: d2 }] };
               }
             }
+          }
+          // milieu de la paire (i, j) : le point à mi-chemin de deux repères,
+          // le pendant du osnap « Between » des logiciels de CAO — utile même
+          // quand les deux références n'ont aucune direction en commun.
+          const mx = (this.points[i].x + this.points[j].x) / 2;
+          const my = (this.points[i].y + this.points[j].y) / 2;
+          const dm = Math.hypot(mx - p.x, my - p.y);
+          if (dm < meilleureD) {
+            meilleureD = dm;
+            const vx = this.points[j].x - this.points[i].x;
+            const vy = this.points[j].y - this.points[i].y;
+            const n = Math.hypot(vx, vy) || 1;
+            meilleur = { x: mx, y: my, type: 'milieu',
+                         lignes: [{ o: this.points[i], d: { x: vx / n, y: vy / n } }] };
           }
         }
       }

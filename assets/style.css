@@ -78,11 +78,17 @@ pre.csp{
 .bp-section h4{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--txt-dim);margin:0 0 9px}
 .bp-field{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--txt-dim);margin-bottom:7px}
 .bp-field span{flex:0 0 88px}
-.bp-field input{flex:1 1 auto;min-width:0;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;color:var(--txt);padding:7px 9px;font-size:12.5px}
-.bp-field input:focus{border-color:var(--accent);outline:none}
+.bp-field input, .bp-field select{flex:1 1 auto;min-width:0;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;color:var(--txt);padding:7px 9px;font-size:12.5px}
+.bp-field input:focus, .bp-field select:focus{border-color:var(--accent);outline:none}
 .bp-field em{font-style:normal;font-size:11px;color:var(--txt)}
 .bp-tools{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px}
 .bp-tools .btn:first-child{grid-column:1/-1}
+/* Barre d'outils à icônes (style Revit) : rangée de boutons carrés. */
+.bp-tools-icones{display:flex;flex-wrap:wrap;gap:6px}
+.bp-tool{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;padding:0;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;cursor:pointer;color:var(--txt-dim)}
+.bp-tool svg{width:20px;height:20px}
+.bp-tool:hover{border-color:var(--accent);color:var(--txt)}
+.bp-tool.on{background:var(--accent);border-color:var(--accent);color:#fff}
 .bp-checks{display:grid;grid-template-columns:1fr 1fr;gap:5px 10px}
 .bp-checks label{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--txt);cursor:pointer}
 .bp-checks input{accent-color:var(--accent);margin:0}
@@ -259,6 +265,7 @@ kbd{background:var(--panel-2);border:1px solid var(--line);border-radius:4px;pad
   width:74px;padding:6px 8px;background:var(--panel-2);border:1px solid var(--line);
   border-radius:7px;outline:none;text-align:right;
 }
+.field-row select{background:var(--panel-2);border:1px solid var(--line);border-radius:7px;color:var(--txt);padding:6px 8px;font-size:12px}
 .stepper{display:flex;align-items:center;gap:4px}
 .stepper button{
   width:28px;height:28px;border-radius:7px;background:var(--panel-2);border:1px solid var(--line);

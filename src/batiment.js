@@ -1,5 +1,5 @@
 import * as THREE from '../vendor/three/three.module.js';
-import { PlanGraph, add, scale, normalize, perp, cross, dist, sub, dot, lineIntersect } from './core/topologie.js';
+import { PlanGraph, add, scale, normalize, perp, cross, dist, sub, dot, lineIntersect, decalageCorps, facesMur } from './core/topologie.js';
 import { snapOsnap, metresParPixel } from './core/osnap.js';
 import { Reperage, intersectionsApparentes, tangentesVersCercle } from './core/reperage.js';
 import { Brush, Evaluator, SUBTRACTION } from '../vendor/three/addons/csg/index.js';
@@ -51,7 +51,10 @@ function paramsOuverture(w, graph, op) {
   const f = graph.wallFrame(w);
   const largeur = (op.s1 - op.s0) * f.len;
   const sMid = (op.s0 + op.s1) / 2;
-  const centre = add(f.A, scale(f.d, sMid * f.len));
+  // le corps du mur est decale lateralement par sa justification (nu
+  // interieur/exterieur) ; l'ouverture generee en 3D doit suivre le corps,
+  // pas rester sur l'axe trace.
+  const centre = add(add(f.A, scale(f.d, sMid * f.len)), decalageCorps(w, f));
   return {
     largeur,
     hauteur: (op.z1 ?? w.height) - (op.z0 || 0),
@@ -360,6 +363,7 @@ class EtatMur extends Etat {
     if (this.b._ancre && cible !== this.b._ancre) {
       const wid = this.b.graph.addWall(this.b._ancre, cible, {
         thickness: this.b.epaisseur, height: this.b.hauteur, elevation: this.b.elevation,
+        justification: this.b.justification,
       });
       if (wid) {
         this.b.graph.intersectAndSplit(wid);
@@ -463,6 +467,305 @@ class EtatPorte extends Etat {
   }
 }
 
+/** Outils topologiques d'édition des murs, en vue de plan :
+ *   • SCINDER : couper un mur en deux au point cliqué (clic unique) ;
+ *   • AJUSTER : raccorder l'extrémité d'un mur à la droite d'un mur de
+ *     référence — trim si l'intersection est réelle, prolongement si elle
+ *     est apparente (le mur est raccourci ou allongé jusqu'à la limite) ;
+ *   • ALIGNER : rendre un mur parallèle à un mur de référence (milieu conservé) ;
+ *   • DÉCALER : copier un mur en parallèle, à distance signée.
+ *  Les quatre opèrent sur le graphe topologique, jamais sur les items.
+ *  Portée depuis la branche « Open code », relue intégralement — la seule
+ *  correction nécessaire a été ailleurs (cornerPoints, voir core/topologie.js),
+ *  ce module-ci raisonne sur un seul mur à la fois et n'a jamais eu ce défaut. */
+class EtatTopo extends Etat {
+  entrer() {
+    this._depart = null;
+    this._ref = null;              // mur choisi en premier : { wallId, frame }
+    this._refCandidate = null;     // mur survolé (référence potentielle, aligner)
+    this._marqueur = null;
+    this._preview = null;          // ligne d'aperçu (décalage)
+    this._lignesAxe = null;        // groupe des 3 axes d'alignement (aligner)
+    this.b.setMurSelectionne(null);
+    this.b.group.visible = false;
+    this.b._apercu.visible = true;
+    this.b._entrerPlan();
+    this.b._reconstruireProxy();
+    this.b._rafraichirApercu();
+    this._statut();
+  }
+  quitter() {
+    this.b._apercu.visible = false;
+    this._retirerMarqueur();
+    this._retirerPreview();
+    this._retirerAxe();
+    this.b._finirSelection();
+    this.b.group.visible = true;
+    if (!this.b.vide) this.b.generer3D();   // calcul lourd : une seule fois
+    this.b._onStatut?.(null);
+  }
+  surDown(ev) {
+    if (ev.button !== 0) return;
+    ev.stopPropagation();
+    ev.preventDefault();
+    this._depart = { x: ev.clientX, y: ev.clientY };
+  }
+  surMove(ev) {
+    const p = this.b._solSous(ev);
+    if (!p) return;
+    this.b.viewer.demanderImage(1);
+    if (this.b._outilTopo === 'scinder') {
+      const sous = this.b.graph.murSous(p, this.b._tolerancePixels(p, 15));
+      if (sous) this._montrerMarqueur(sous.pt);
+      else this._retirerMarqueur();
+    } else if (this.b._outilTopo === 'ajuster') {
+      this._survolAjuster(p);
+    } else if (this.b._outilTopo === 'aligner') {
+      this._survolCandidat(p);
+    } else {
+      this._survolDecaler(p);
+    }
+  }
+  surUp(ev) {
+    if (ev.button !== 0) return;
+    const dep = this._depart; this._depart = null;
+    if (!dep || Math.hypot(ev.clientX - dep.x, ev.clientY - dep.y) > 5) return;
+    const p = this.b._solSous(ev);
+    if (!p) return;
+    ev.stopPropagation();
+    ev.preventDefault();
+    if (this.b._outilTopo === 'scinder') this._clicScinder(p);
+    else if (this.b._outilTopo === 'ajuster') this._clicAjuster(p);
+    else if (this.b._outilTopo === 'aligner') this._clicAligner(p);
+    else this._clicDecaler(p);
+  }
+  surKey(e) {
+    if (e.key === 'Escape') this.b.arreter();
+  }
+
+  /** Texte de la barre de statut, propre à chaque outil et à son avancement. */
+  _statut() {
+    const txt = {
+      scinder: 'Cliquez un mur pour le couper en deux',
+      ajuster: this._ref ? 'Référence choisie — cliquez le mur à raccorder'
+                         : 'Cliquez le mur limite (référence)',
+      aligner: this._ref ? 'Référence choisie — cliquez le mur à aligner dessus'
+                         : 'Survolez un mur : axe central, nu intérieur et nu extérieur sont détectés',
+      decaler: this._ref ? 'Cliquez un point pour fixer la distance de décalage'
+                         : 'Cliquez le mur à décaler',
+    }[this.b._outilTopo];
+    if (txt) this.b._onStatut?.({ type: 'topo', texte: txt });
+  }
+
+  /* — scinder — */
+  _clicScinder(p) {
+    const sous = this.b.graph.murSous(p, this.b._tolerancePixels(p, 15));
+    if (!sous) { this._msg('Cliquez sur un mur à couper', true); return; }
+    const r = this.b._scinder(sous.wallId, sous.s);
+    this._msg(r.ok ? 'Mur scindé' : r.message, !r.ok);
+  }
+
+  /* — ajuster / prolonger — */
+  _survolAjuster(p) {
+    if (!this._ref) { this._retirerMarqueur(); return; }
+    const sous = this.b.graph.murSous(p, this.b._tolerancePixels(p, 15));
+    if (!sous || sous.wallId === this._ref.wallId) { this._retirerMarqueur(); return; }
+    const ft = this.b.graph.wallFrame(sous.wall);
+    const X = lineIntersect(ft.A, ft.d, this._ref.frame.A, this._ref.frame.d);
+    if (X) this._montrerMarqueur(X, 0x3d8bff);
+    else this._retirerMarqueur();
+  }
+  _clicAjuster(p) {
+    const tol = this.b._tolerancePixels(p, 15);
+    const sous = this.b.graph.murSous(p, tol);
+    if (!sous) { this._msg('Cliquez sur un mur', true); return; }
+    if (!this._ref) {
+      // premier clic : le mur de référence (la limite à laquelle on raccorde)
+      this._ref = { wallId: sous.wallId, frame: this.b.graph.wallFrame(sous.wall) };
+      this._statut();
+      this._msg('Référence choisie — cliquez le mur à raccorder');
+      return;
+    }
+    if (sous.wallId === this._ref.wallId) { this._msg('Choisissez un AUTRE mur', true); return; }
+    const ft = this.b.graph.wallFrame(sous.wall);
+    const X = lineIntersect(ft.A, ft.d, this._ref.frame.A, this._ref.frame.d);
+    if (!X) { this._msg('Murs parallèles : aucune intersection', true); return; }
+    // extrémité déplacée = la plus proche du point cliqué (le « côté » choisi)
+    const dA = dist(p, ft.A), dB = dist(p, ft.B);
+    const extremite = dA < dB ? 'a' : 'b';
+    const E = extremite === 'a' ? ft.A : ft.B;
+    const F = extremite === 'a' ? ft.B : ft.A;
+    // l'intersection doit rester du côté de l'extrémité déplacée, sans quoi
+    // le mur se retournerait (elle tombe au-delà de l'autre extrémité).
+    if (dot(sub(X, F), sub(E, F)) <= 1e-9) {
+      this._msg('Intersection de l’autre côté du mur', true);
+      return;
+    }
+    const r = this.b._deplacerExtremite(sous.wallId, extremite, X, this._ref.wallId);
+    this._msg(r.ok ? 'Mur raccordé' : r.message, !r.ok);
+  }
+
+  /* — aligner — */
+  _offAxe(w, axe) {
+    const f = facesMur(w);
+    return axe === 'interieur' ? f.g : (axe === 'exterieur' ? f.r : 0);
+  }
+  _nomAxe(axe) {
+    return { centre: 'axe central', interieur: 'nu intérieur', exterieur: 'nu extérieur' }[axe] || axe;
+  }
+  _axeLePlusProche(w, frame, p) {
+    const axes = [
+      { axe: 'centre', off: 0 },
+      { axe: 'interieur', off: facesMur(w).g },
+      { axe: 'exterieur', off: facesMur(w).r },
+    ];
+    let best = axes[0], bestD = Infinity;
+    for (const a of axes) {
+      const d = Math.abs(dot(sub(p, frame.A), frame.n) - a.off);
+      if (d < bestD) { bestD = d; best = a; }
+    }
+    return best;
+  }
+  _survolCandidat(p) {
+    // Survol : les TROIS axes d'alignement du mur (centre, nu intérieur, nu
+    // extérieur) sont affichés ; le plus proche du curseur est surligné. C'est
+    // le geste SmartTrack — la référence se décide en regardant, pas en cliquant.
+    const sous = this.b.graph.murSous(p, this.b._tolerancePixels(p, 15));
+    if (sous && (!this._ref || sous.wallId !== this._ref.wallId)) {
+      const frame = this.b.graph.wallFrame(sous.wall);
+      const axe = this._axeLePlusProche(sous.wall, frame, p);
+      this._refCandidate = { wallId: sous.wallId, frame, axe: axe.axe, wall: sous.wall };
+      this._montrerAxes(sous.wall, frame, axe.axe);
+    } else if (this._ref) {
+      this._refCandidate = null;
+      this._montrerAxes(this._ref.wall, this._ref.frame, this._ref.axe);
+    } else {
+      this._refCandidate = null;
+      this._retirerAxe();
+    }
+  }
+  _clicAligner(p) {
+    const sous = this.b.graph.murSous(p, this.b._tolerancePixels(p, 15));
+    if (!sous) { this._msg('Cliquez sur un mur', true); return; }
+    if (!this._ref) {
+      const frame = this.b.graph.wallFrame(sous.wall);
+      const axe = this._axeLePlusProche(sous.wall, frame, p);
+      this._ref = { wallId: sous.wallId, frame, axe: axe.axe, wall: sous.wall };
+      this._montrerAxes(sous.wall, frame, axe.axe);
+      this._statut();
+      this._msg(`Référence choisie (${this._nomAxe(axe.axe)}) — cliquez le mur à aligner dessus`);
+      return;
+    }
+    if (sous.wallId === this._ref.wallId) { this._msg('Choisissez un AUTRE mur', true); return; }
+    const frame = this.b.graph.wallFrame(sous.wall);
+    const axe = this._axeLePlusProche(sous.wall, frame, p);
+    const r = this.b._aligner(sous.wallId, this._ref.wallId, axe.axe, this._ref.axe);
+    this._msg(r.ok ? 'Mur aligné' : r.message, !r.ok);
+  }
+
+  /* — décaler — */
+  _survolDecaler(p) {
+    if (!this._ref) { this._retirerMarqueur(); this._retirerPreview(); return; }
+    const f = this._ref.frame;
+    const e = dot(sub(p, f.A), f.n);   // distance signée le long de la normale
+    this._montrerPreview(add(f.A, scale(f.n, e)), add(f.B, scale(f.n, e)));
+    this._montrerMarqueur(p, 0x3d8bff);
+  }
+  _clicDecaler(p) {
+    const sous = this.b.graph.murSous(p, this.b._tolerancePixels(p, 15));
+    if (!this._ref) {
+      if (!sous) { this._msg('Cliquez sur un mur à décaler', true); return; }
+      this._ref = { wallId: sous.wallId, frame: this.b.graph.wallFrame(sous.wall) };
+      this._statut();
+      this._msg('Mur choisi — cliquez un point pour la distance');
+      return;
+    }
+    const f = this._ref.frame;
+    const e = dot(sub(p, f.A), f.n);
+    const r = this.b._decaler(this._ref.wallId, e);
+    this._msg(r.ok ? 'Mur décalé' : r.message, !r.ok);
+  }
+
+  /* — marqueur / aperçu / retour utilisateur — */
+  _montrerPreview(A, B) {
+    if (!this._preview) {
+      this._preview = new THREE.Line(new THREE.BufferGeometry(),
+        new THREE.LineDashedMaterial({ color: 0xffb020, depthTest: false, dashSize: 0.16, gapSize: 0.1 }));
+      this._preview.renderOrder = 1000;
+      this.b._apercu.add(this._preview);
+    }
+    this._preview.geometry.dispose();
+    this._preview.geometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(A.x, A.y, 0.05), new THREE.Vector3(B.x, B.y, 0.05),
+    ]);
+    this._preview.computeLineDistances();
+    this._preview.visible = true;
+  }
+  _retirerPreview() {
+    if (this._preview) this._preview.visible = false;
+  }
+  /** Affiche les TROIS axes d'alignement d'un mur (centre, nu intérieur, nu
+   *  extérieur), l'axe le plus proche du curseur étant surligné. */
+  _montrerAxes(wall, frame, axeActif = null) {
+    if (!this._lignesAxe) {
+      this._lignesAxe = new THREE.Group();
+      this._lignesAxe.renderOrder = 1000;
+      this._lignesAxe.userData.lignes = [];
+      for (let i = 0; i < 3; i++) {
+        const l = new THREE.Line(new THREE.BufferGeometry(),
+          new THREE.LineDashedMaterial({ color: 0x3d8bff, depthTest: false, dashSize: 0.16, gapSize: 0.1, transparent: true }));
+        this._lignesAxe.add(l);
+        this._lignesAxe.userData.lignes.push(l);
+      }
+      this.b._apercu.add(this._lignesAxe);
+    }
+    const ext = Math.max(this.b.viewer.gridStep * 4, 2);
+    const f = facesMur(wall);
+    const axes = [
+      { axe: 'centre', off: 0 },
+      { axe: 'interieur', off: f.g },
+      { axe: 'exterieur', off: f.r },
+    ];
+    axes.forEach((a, i) => {
+      const l = this._lignesAxe.userData.lignes[i];
+      const o = add(frame.A, scale(frame.n, a.off));
+      const p1 = { x: o.x - frame.d.x * ext, y: o.y - frame.d.y * ext };
+      const p2 = { x: o.x + frame.d.x * ext, y: o.y + frame.d.y * ext };
+      l.geometry.dispose();
+      l.geometry = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(p1.x, p1.y, 0.05), new THREE.Vector3(p2.x, p2.y, 0.05),
+      ]);
+      l.computeLineDistances();
+      const actif = a.axe === axeActif;
+      l.material.color.set(actif ? 0x3ecf8e : 0x3d8bff);
+      l.material.opacity = actif ? 1 : 0.3;
+      l.visible = true;
+    });
+    this._lignesAxe.visible = true;
+  }
+  _retirerAxe() {
+    if (this._lignesAxe) this._lignesAxe.visible = false;
+  }
+  _montrerMarqueur(p, couleur = 0xff5f56) {
+    if (!this._marqueur) {
+      this._marqueur = new THREE.Mesh(
+        new THREE.SphereGeometry(1, 12, 8),
+        new THREE.MeshBasicMaterial({ color: couleur, depthTest: false, transparent: true, opacity: 0.95 })
+      );
+      this._marqueur.renderOrder = 1001;
+      this.b._apercu.add(this._marqueur);
+    }
+    this._marqueur.material.color.set(couleur);
+    this._marqueur.scale.setScalar(Math.max(this.b.viewer.gridStep * 0.4, 0.04));
+    this._marqueur.position.set(p.x, p.y, 0.06);
+    this._marqueur.visible = true;
+  }
+  _retirerMarqueur() {
+    if (this._marqueur) this._marqueur.visible = false;
+  }
+  _msg(texte, err = false) { this.b._onMessage?.(texte, err); }
+}
+
 /* ══════════════════ façade ══════════════════ */
 
 export class Batiment {
@@ -541,6 +844,10 @@ export class Batiment {
     this._poigneeActive = null;       // nœud en cours de glisser
     this._dirCourante = null;    // direction du segment en cours (saisie au clavier)
     this._onStatut = null;       // callback barre de statut
+    this._onMessage = null;      // callback toast (retour des outils topologiques)
+    this._onEtat = null;         // callback changement d'état (synchronisation UI)
+    this._outilTopo = 'scinder'; // outil topologique actif : scinder|ajuster|aligner|decaler
+    this.justification = 'centre';   // ligne de référence des NOUVEAUX murs tracés
     this._focusSaisie = null;    // focus le champ longueur (après le 1er clic)
     this._viderSaisie = null;    // vide le champ longueur (Échap)
     this._murs3D = [];           // maillages 3D des murs (sélection)
@@ -555,6 +862,7 @@ export class Batiment {
       repos: new EtatRepos(this),
       mur: new EtatMur(this),
       porte: new EtatPorte(this),
+      topo: new EtatTopo(this),
     };
     this._etat = this._etats.repos;
 
@@ -572,19 +880,32 @@ export class Batiment {
   }
 
   get vide() { return this.graph.walls.size === 0; }
-  get etatNom() { return this._etat === this._etats.mur ? 'mur' : (this._etat === this._etats.porte ? 'porte' : 'repos'); }
+  get etatNom() {
+    return this._etat === this._etats.mur ? 'mur'
+      : (this._etat === this._etats.porte ? 'porte'
+      : (this._etat === this._etats.topo ? 'topo' : 'repos'));
+  }
 
   _definirEtat(nom) {
     this._etat.quitter();
     this._etat = this._etats[nom];
     this._etat.entrer();
     this.actif = nom !== 'repos';
+    this._onEtat?.(nom);
   }
 
   /* ---- entrées d'interface ---- */
   tracerMurs() { this._definirEtat('mur'); }
   insererPorte() { this._typeOuverture = 'door'; this._definirEtat('porte'); }
   insererFenetre() { this._typeOuverture = 'window'; this._definirEtat('porte'); }
+  /** Outil Scinder : couper un mur en deux au point cliqué. */
+  scinderMur() { this._outilTopo = 'scinder'; this._definirEtat('topo'); }
+  /** Outil Ajuster/Prolonger : raccorder un mur à la droite d'un mur de référence. */
+  ajusterMurs() { this._outilTopo = 'ajuster'; this._definirEtat('topo'); }
+  /** Outil Aligner : rendre un mur parallèle à un mur de référence (nu au choix). */
+  alignerMurs() { this._outilTopo = 'aligner'; this._definirEtat('topo'); }
+  /** Outil Décaler : copier un mur en parallèle, à distance choisie. */
+  decalerMurs() { this._outilTopo = 'decaler'; this._definirEtat('topo'); }
   /** Bascule le sous-mode du tracé : dessin (false) / édition (true). */
   setModeEdition(on) {
     this._modeEdition = !!on;
@@ -1043,6 +1364,12 @@ export class Batiment {
     tracer('tangente', (ctx, m, s) => { ctx.beginPath(); ctx.arc(m, m + s * 0.4, s * 0.6, 0, 2 * Math.PI); ctx.stroke(); ctx.beginPath(); ctx.moveTo(m - s, m - s * 0.2); ctx.lineTo(m + s, m - s * 0.2); ctx.stroke(); });
     tracer('apparente', (ctx, m, s) => { ctx.beginPath(); ctx.moveTo(m - s, m - s); ctx.lineTo(m + s, m + s); ctx.moveTo(m + s, m - s); ctx.lineTo(m - s, m + s); ctx.stroke(); ctx.beginPath(); ctx.setLineDash([6, 5]); ctx.moveTo(m - s * 1.5, m); ctx.lineTo(m + s * 1.5, m); ctx.stroke(); ctx.setLineDash([]); });
     tracer('croisement', (ctx, m, s) => { ctx.beginPath(); ctx.moveTo(m - s, m); ctx.lineTo(m + s, m); ctx.moveTo(m, m - s); ctx.lineTo(m, m + s); ctx.moveTo(m - s * 0.7, m - s * 0.7); ctx.lineTo(m + s * 0.7, m + s * 0.7); ctx.moveTo(m + s * 0.7, m - s * 0.7); ctx.lineTo(m - s * 0.7, m + s * 0.7); ctx.stroke(); });
+    // milieu de deux reperes : deux petits cercles relies, comme un « between » de CAO
+    tracer('milieu', (ctx, m, s) => {
+      ctx.beginPath(); ctx.moveTo(m - s, m); ctx.lineTo(m + s, m); ctx.stroke();
+      ctx.beginPath(); ctx.arc(m - s * 0.8, m, s * 0.28, 0, 2 * Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.arc(m + s * 0.8, m, s * 0.28, 0, 2 * Math.PI); ctx.stroke();
+    });
 
     this._guideLigne = new THREE.Line(new THREE.BufferGeometry(),
       new THREE.LineDashedMaterial({ color: 0x00ff88, depthTest: false, transparent: true, dashSize: 0.16, gapSize: 0.1 }));
@@ -1081,7 +1408,7 @@ export class Batiment {
        ligne qui explique le point propose — sans elle, le curseur
        s'accroche a un endroit dont rien ne dit pourquoi. */
     if (s.type === 'alignement' || s.type === 'croisement'
-        || s.type === 'apparente' || s.type === 'tangente') {
+        || s.type === 'apparente' || s.type === 'tangente' || s.type === 'milieu') {
       const pts = [];
       for (const seg of Reperage.segments(s, this.viewer.gridStep * 200 || 60)) {
         pts.push(new THREE.Vector3(seg.a.x, seg.a.y, 0.04),
@@ -1193,7 +1520,7 @@ export class Batiment {
 
   _genererRectangle(a, b) {
     if (Math.abs(a.x - b.x) < 1e-6 || Math.abs(a.y - b.y) < 1e-6) return;
-    const opts = { thickness: this.epaisseur, height: this.hauteur, elevation: this.elevation };
+    const opts = { thickness: this.epaisseur, height: this.hauteur, elevation: this.elevation, justification: this.justification };
     const n1 = this.graph.addNode(a.x, a.y);
     const n2 = this.graph.addNode(b.x, a.y);
     const n3 = this.graph.addNode(b.x, b.y);
@@ -1386,6 +1713,143 @@ export class Batiment {
       if (!noeud.wallIds.size && !epargnes.has(id)) { this.graph.nodes.delete(id); n++; }
     }
     return n;
+  }
+
+  /** Scinde un mur au paramètre s (0..1). Refuse aux extrémités (no-op déguisé)
+   *  et si le point de coupe traverse une ouverture existante. */
+  _scinder(wallId, s) {
+    const w = this.graph.walls.get(wallId);
+    if (!w) return { ok: false, message: 'Aucun mur' };
+    if (s <= 1e-6 || s >= 1 - 1e-6) return { ok: false, message: 'Coupe impossible à une extrémité' };
+    for (const o of w.openings) {
+      if (o.s0 < s && s < o.s1) return { ok: false, message: 'Coupe impossible : traverse une ouverture' };
+    }
+    const nid = this.graph.splitWall(wallId, s);
+    if (!nid) return { ok: false, message: 'Coupe impossible' };
+    this._rafraichirApercu();
+    this._reconstruireProxy();
+    this._onChange();
+    return { ok: true };
+  }
+
+  /** Déplace une extrémité de mur vers un point (ajustement/prolongement).
+   *
+   *  Les ouvertures gardent leur position et leur largeur PHYSIQUES : leurs
+   *  fractions s0/s1 sont renormalisées sur la nouvelle longueur, et le geste
+   *  est refusé s'il raccourcirait le mur à travers une ouverture. */
+  _deplacerExtremite(wallId, extremite, vers, refWallId = null) {
+    const w = this.graph.walls.get(wallId);
+    if (!w) return { ok: false, message: 'Aucun mur' };
+    const f = this.graph.wallFrame(w);
+    const nid = extremite === 'a' ? w.a : w.b;
+    const F = extremite === 'a' ? f.B : f.A;       // extrémité FIXE
+    const L = Math.hypot(vers.x - F.x, vers.y - F.y);
+    if (L < 1e-6) return { ok: false, message: 'Longueur nulle' };
+
+    for (const o of w.openings) {
+      // portée physique de l'ouverture depuis l'extrémité fixe : [d0 près, d1 loin]
+      let d0, d1;
+      if (extremite === 'b') { d0 = o.s0 * f.len; d1 = o.s1 * f.len; }
+      else { d0 = (1 - o.s1) * f.len; d1 = (1 - o.s0) * f.len; }
+      if (L < d1 - 1e-6) return { ok: false, message: 'Ajustement impossible : coupe une ouverture' };
+      // renormalisation (les fractions restent mesurées de a vers b)
+      if (extremite === 'b') { o.s0 = d0 / L; o.s1 = d1 / L; }
+      else { o.s0 = (L - d1) / L; o.s1 = (L - d0) / L; }
+    }
+
+    this.graph.setNodePos(nid, vers.x, vers.y);
+
+    // RACCORDEMENT : si le point tombe sur le mur de référence, les deux murs
+    // partagent un nœud — sans cela ils se touchent visuellement mais restent
+    // indépendants (le déplacement d'un mur n'entraîne pas l'autre, les pièces
+    // ne se ferment pas). Le nœud déplacé sert de point de coupe à la référence.
+    if (refWallId && refWallId !== wallId) {
+      const r = this.graph.walls.get(refWallId);
+      if (r) {
+        const fr = this.graph.wallFrame(r);
+        const sX = dot(sub(vers, fr.A), fr.d) / fr.len;
+        if (sX > 1e-6 && sX < 1 - 1e-6) {
+          this.graph.splitWall(refWallId, sX, nid);
+        } else if (sX <= 1e-6 || sX >= 1 - 1e-6) {
+          // le point tombe sur une extrémité de la référence : on adopte son nœud
+          const nidRef = sX <= 1e-6 ? r.a : r.b;
+          if (nidRef !== nid) {
+            if (extremite === 'a') w.a = nidRef; else w.b = nidRef;
+            this.graph.nodes.get(nidRef).wallIds.add(wallId);
+            const an = this.graph.nodes.get(nid);
+            if (an) { an.wallIds.delete(wallId); if (!an.wallIds.size) this.graph.nodes.delete(nid); }
+          }
+        }
+        // sinon : point sur le prolongement de la référence → nœud libre, rien à lier
+      }
+    }
+
+    this._rafraichirApercu();
+    this._reconstruireProxy();
+    this._onChange();
+    return { ok: true };
+  }
+
+  /** Aligne une LIGNE du mur cible (axe central / nu intérieur / nu extérieur)
+   *  sur une LIGNE du mur de référence (idem). Le mur devient parallèle à la
+   *  référence, puis est translaté pour que la ligne choisie coïncide — à
+   *  longueur constante. C'est ce qui permet d'aligner un nu sur un nu, quel
+   *  que soit le mode de création (axe) de chaque mur. */
+  _aligner(wallId, refWallId, axeCible = 'centre', axeRef = 'centre') {
+    const w = this.graph.walls.get(wallId);
+    const r = this.graph.walls.get(refWallId);
+    if (!w || !r) return { ok: false, message: 'Aucun mur' };
+    if (wallId === refWallId) return { ok: false, message: 'Choisissez un AUTRE mur' };
+    const fw = this.graph.wallFrame(w);
+    const fr = this.graph.wallFrame(r);
+
+    const offAxe = (m, axe) => {
+      const f = facesMur(m);
+      return axe === 'interieur' ? f.g : (axe === 'exterieur' ? f.r : 0);
+    };
+    const offT = offAxe(w, axeCible);      // décalage signé de la ligne du mur cible
+    const offS = offAxe(r, axeRef);        // décalage signé de la ligne de référence
+
+    // direction de la référence, orientée au plus proche de la direction actuelle
+    let d = { x: fr.d.x, y: fr.d.y };
+    if (dot(d, fw.d) < 0) d = { x: -d.x, y: -d.y };
+    const n = { x: -d.y, y: d.x };         // nouvelle normale gauche du mur cible
+
+    // lignes en jeu (point d'origine + direction d)
+    const oS = add(fr.A, scale(fr.n, offS));
+    const oT = add(fw.A, scale(fw.n, offT));
+    // projection de la ligne cible sur la ligne de référence (composante // conservée)
+    const t = dot(sub(oT, oS), d);
+    const oT2 = add(oS, scale(d, t));
+    // nouvel axe du mur cible : sa ligne choisie repose sur la ligne de référence
+    const A2 = sub(oT2, scale(n, offT));
+    const B2 = add(A2, scale(d, fw.len));
+
+    this.graph.setNodePos(w.a, A2.x, A2.y);
+    this.graph.setNodePos(w.b, B2.x, B2.y);
+    this._rafraichirApercu();
+    this._reconstruireProxy();
+    this._onChange();
+    return { ok: true };
+  }
+
+  /** Copie un mur en parallèle, à distance signée e (le long de sa normale). */
+  _decaler(wallId, e) {
+    const w = this.graph.walls.get(wallId);
+    if (!w) return { ok: false, message: 'Aucun mur' };
+    if (Math.abs(e) < 1e-6) return { ok: false, message: 'Décalage nul' };
+    const f = this.graph.wallFrame(w);
+    const A = add(f.A, scale(f.n, e));
+    const B = add(f.B, scale(f.n, e));
+    const a = this.graph.addNode(A.x, A.y);
+    const b = this.graph.addNode(B.x, B.y);
+    const nwid = this.graph.addWall(a, b, { thickness: w.thickness, height: w.height, elevation: w.elevation, justification: w.justification });
+    // le mur décalé croise peut-être d'autres murs : on le raccorde comme au tracé
+    if (nwid) this.graph.intersectAndSplit(nwid);
+    this._rafraichirApercu();
+    this._reconstruireProxy();
+    this._onChange();
+    return { ok: true };
   }
 
   _supprimerSelection() {

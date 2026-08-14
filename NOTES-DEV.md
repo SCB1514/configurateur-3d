@@ -45,6 +45,28 @@ Bibliothèques dans `data/` : `library.json` (démo), `library-crossfit.json`
 
 Ceux-ci ont coûté du temps. Les relire vaut mieux que les revivre.
 
+**Le coin d'un mur ne se calcule PAS avec la normale canonique du voisin.**
+`PlanGraph.cornerPoints(wallId, end)` mitre le coin de deux murs en
+intersectant leurs faces `left`/`right` — mais ces faces doivent être
+exprimées dans le repère LOCAL de chaque mur à CE nœud (`left =
+perp(dInto)`, où `dInto` pointe vers le nœud depuis l'autre extrémité), et
+non dans le repère CANONIQUE fixe A→B (`wallFrame(w).n`). La raison : dans
+une polyligne tracée normalement, deux murs consécutifs partagent un nœud
+qui est le `b` du premier et le `a` du second — une asymétrie systématique,
+pas un cas rare. Utiliser le repère canonique du voisin pour ce pairage
+revient à confondre « la gauche du voisin » avec « la face du voisin qui
+touche réellement ce coin », qui NE SONT PAS la même chose dès que le
+voisin touche le nœud par son extrémité `a`. Le symptôme : un chevauchement
+en biais à l'angle, visuellement un chanfrein à 45°, sur pratiquement tous
+les coins d'une polyligne. Mesuré, pas supposé : un test direct sur un
+virage en L donne des coins strictement joints avec le repère local, et
+des coins désalignés avec le repère canonique, sur les quatre
+configurations d'angle testées. Le correctif introduit `_decalagesLocaux`
+qui convertit les décalages canoniques de justification (`facesMur`) en
+décalages locaux avant tout calcul de coin — le repère canonique reste
+correct pour tout ce qui ne pairte PAS deux murs entre eux
+(`openingOutline`, l'aperçu d'un mur seul).
+
 **Un objet three retient la caméra qu'on lui donne à sa construction.** Cela
 vaut pour `RenderPass`, `GTAOPass` et `TransformControls`. Le mode plan échange
 la caméra perspective contre une orthographique : sans resynchronisation à
@@ -160,6 +182,17 @@ diff, six étaient faux après vérification dans le code.
   et fusionner l'aurait fait perdre ce comportement pour un gain flou.
 - **Ambiance « Intérieur »** : les quatre existantes éclairent comme un studio
   et délavent une salle fermée dont les luminaires devraient faire le travail.
+- **Outils topologiques des murs** (scinder, ajuster/prolonger, aligner,
+  décaler) : intégrés depuis la branche « Open code », relus intégralement,
+  un bug source corrigé au passage (`{ color }` sans variable `color` dans
+  `_montrerMarqueur`). Nouvelle palette d'icônes dans le panneau Bâtiment
+  (`data-outil`), qui remplace l'ancien couple de boutons Dessiner/Éditer —
+  un seul outil actif à la fois, déduit de l'état de la machine
+  (`outilActif()` dans `main.js`), jamais mémorisé à part.
+- **Justification des murs** (axe central / nu intérieur / nu extérieur) :
+  intégrée avec les outils topologiques, dont elle partage le code
+  (`facesMur`, `decalageCorps` dans `core/topologie.js`). Sélecteurs dans le
+  panneau (nouveaux murs) et dans l'inspecteur (mur sélectionné).
 - **Plan de coupe** : rend trop pâle, le poché s'écrase sous l'ambiance claire.
 
 ## Vérifier, toujours

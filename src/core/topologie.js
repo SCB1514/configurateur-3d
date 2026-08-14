@@ -50,6 +50,37 @@ export function lineIntersect(p, r, q, s) {
   return add(p, scale(r, t));
 }
 
+/**
+ * Décalage LATÉRAL du corps d'un mur selon sa justification, relatif à la
+ * ligne d'axe tracée (le « nu » est la face qui coïncide avec l'axe) :
+ *   • centre    : décalage nul (le corps reste centré sur l'axe) ;
+ *   • interieur : l'axe EST la face intérieure (corps repoussé vers l'extérieur) ;
+ *   • exterieur : l'axe EST la face extérieure (corps repoussé vers l'intérieur).
+ * `f` est la frame du mur { A, d, n (normale gauche), len }.
+ */
+export function decalageCorps(w, f) {
+  const k = { centre: 0, interieur: 1, exterieur: -1 }[w.justification] || 0;
+  return scale(f.n, -k * (w.thickness || 0) / 2);
+}
+
+/**
+ * Décalages des DEUX faces d'un mur le long de sa normale gauche CANONIQUE
+ * (celle de `wallFrame`, fixe pour A→B, indépendante de l'extrémité consultée) :
+ *   { g } face gauche (+n), { r } face droite (−n).
+ *   • centre    : g = +h,  r = −h  (comportement historique, inchangé) ;
+ *   • interieur : g = 0,   r = −épaisseur  (l'axe tracé EST la face intérieure) ;
+ *   • exterieur : g = +ép., r = 0  (l'axe tracé EST la face extérieure).
+ * Porté depuis la branche « Open code » : ces formules sont correctes en
+ * elles-mêmes — ce qui ne l'était pas, c'est la façon dont `cornerPoints`
+ * les consommait (voir plus bas, `localeG`/`localeR`).
+ */
+export function facesMur(w) {
+  const t = w.thickness || 0, h = t / 2;
+  if (w.justification === 'interieur') return { g: 0, r: -t };
+  if (w.justification === 'exterieur') return { g: t, r: 0 };
+  return { g: h, r: -h };
+}
+
 /* ---------- accroche (snapping) ---------- */
 
 /**
@@ -104,10 +135,10 @@ export class PlanGraph {
   }
 
   /** Crée un mur entre deux nœuds. Fusionne deux murs colinéaires superposés ? Non : un mur par segment. */
-  addWall(a, b, { thickness = 0.15, height = 2.7, elevation = 0 } = {}) {
+  addWall(a, b, { thickness = 0.15, height = 2.7, elevation = 0, justification = 'centre' } = {}) {
     if (a === b) return null;
     const id = this._uid('w');
-    const wall = { id, a, b, thickness, height, elevation, openings: [] };
+    const wall = { id, a, b, thickness, height, elevation, justification, openings: [] };
     this.walls.set(id, wall);
     this.nodes.get(a).wallIds.add(id);
     this.nodes.get(b).wallIds.add(id);
@@ -157,6 +188,25 @@ export class PlanGraph {
    *                          continuent droit (coupe droite) ;
    *   • degré 4 (croix)    → chaque mur continue droit (coupe droite).
    */
+  /**
+   * Décalages locaux d'un mur, exprimés le long de SA PROPRE direction
+   * d'approche à l'extrémité `atEnd` (celle que `cornerPoints` appelle
+   * `left = perp(dInto)`) — PAS le long de la normale canonique A→B.
+   *
+   * C'est la pièce qui manquait à la justification (centre/intérieur/
+   * extérieur) : `facesMur` donne des décalages canoniques, fixes quelle
+   * que soit l'extrémité consultée, mais la géométrie de coin raisonne en
+   * « quel côté ai-je à ma gauche en approchant CE nœud », qui s'inverse
+   * entre l'extrémité a et l'extrémité b d'un même mur. Pour un mur centré
+   * (g = h, r = -h), le retournement est invisible (g = -r) ; c'est pour ça
+   * que l'ancien code s'en tirait avec une seule paire (h, -h) — la
+   * justification asymétrique (g ≠ -r) le révèle immédiatement.
+   */
+  _decalagesLocaux(wall, atEnd) {
+    const { g, r } = facesMur(wall);
+    return atEnd === 'b' ? { g, r } : { g: -r, r: -g };
+  }
+
   cornerPoints(wallId, end) {
     const w = this.walls.get(wallId);
     const nodeId = end === 'a' ? w.a : w.b;
@@ -164,38 +214,47 @@ export class PlanGraph {
     const P = this.node(nodeId), O = this.node(otherId);
     const dInto = normalize(sub(P, O));      // direction vers le nœud
     const left = perp(dInto);
-    const h = w.thickness / 2;
+    const { g, r } = this._decalagesLocaux(w, end);
 
-    let L = add(P, scale(left, h));          // côté +perp(dInto)
-    let R = add(P, scale(left, -h));
+    let L = add(P, scale(left, g));          // côté +perp(dInto)
+    let R = add(P, scale(left, r));
 
     const others = this.incident(nodeId).filter(id => id !== wallId);
 
     // — L-cornet : unique voisin non colinéaire.
     //   Les faces de même côté ne se font PAS face : à un angle, la face
     //   « gauche » d'un mur rencontre la face « droite » du voisin (côtés
-    //   opposés). Inverser produit un chanfrein sur l'angle extérieur.
+    //   opposés). Inverser produit un chanfrein sur l'angle extérieur —
+    //   exactement le défaut observé quand ce pairage est fait avec des
+    //   décalages CANONIQUES (A→B fixes) au lieu de décalages LOCAUX : deux
+    //   murs consécutifs d'une polyligne se rejoignent presque toujours par
+    //   l'extrémité b de l'un et l'extrémité a de l'autre, la seule
+    //   situation où canonique et local divergent.
     if (others.length === 1) {
       const o = this.walls.get(others[0]);
       const oOther = o.a === nodeId ? o.b : o.a;
+      const oEnd = o.a === nodeId ? 'a' : 'b';
       const dO = normalize(sub(P, this.node(oOther)));
       if (Math.abs(cross(dInto, dO)) > 1e-6) {
         const oLeft = perp(dO);
-        L = lineIntersect(add(P, scale(left, h)), dInto, add(P, scale(oLeft, -h)), dO) ?? L;
-        R = lineIntersect(add(P, scale(left, -h)), dInto, add(P, scale(oLeft, h)), dO) ?? R;
+        const fo = this._decalagesLocaux(o, oEnd);
+        L = lineIntersect(add(P, scale(left, g)), dInto, add(P, scale(oLeft, fo.r)), dO) ?? L;
+        R = lineIntersect(add(P, scale(left, r)), dInto, add(P, scale(oLeft, fo.g)), dO) ?? R;
       }
     }
     // — T : deux voisins colinéaires entre eux → ce mur est le poteau
     else if (others.length === 2) {
       const a = this.walls.get(others[0]), b = this.walls.get(others[1]);
+      const aEnd = a.a === nodeId ? 'a' : 'b';
       const dA = normalize(sub(P, this.node(a.a === nodeId ? a.b : a.a)));
       const dB = normalize(sub(P, this.node(b.a === nodeId ? b.b : b.a)));
       if (Math.abs(cross(dA, dB)) < 1e-6) {
         const nT = perp(dA);                       // normale de la ligne traversante
-        const signe = dot(left, nT) >= 0 ? 1 : -1; // face traversante du côté du poteau
-        const face = add(P, scale(nT, signe * h));
-        L = lineIntersect(add(P, scale(left, h)), dInto, face, dA) ?? L;
-        R = lineIntersect(add(P, scale(left, -h)), dInto, face, dA) ?? R;
+        const fa = this._decalagesLocaux(a, aEnd);  // décalages LOCAUX du mur traversant
+        const signe = dot(left, nT) >= 0 ? 1 : -1;  // face traversante du côté du poteau
+        const face = add(P, scale(nT, signe > 0 ? fa.g : fa.r));
+        L = lineIntersect(add(P, scale(left, g)), dInto, face, dA) ?? L;
+        R = lineIntersect(add(P, scale(left, r)), dInto, face, dA) ?? R;
       }
     }
 
@@ -218,13 +277,14 @@ export class PlanGraph {
   /** Percement rectangulaire (trou) en coordonnées monde 2D, CW. */
   openingOutline(w, opening) {
     const { A, d, n, len } = this.wallFrame(w);
-    const h = w.thickness / 2;
+    const { g, r } = facesMur(w);   // décalages canoniques : suivent la justification du mur
     const s0 = opening.s0 * len, s1 = opening.s1 * len;
-    // Le trou traverse l'épaisseur : de -h à +h le long de n.
-    const a = add(add(A, scale(d, s0)), scale(n, -h));
-    const b = add(add(A, scale(d, s0)), scale(n, h));
-    const c = add(add(A, scale(d, s1)), scale(n, h));
-    const d2 = add(add(A, scale(d, s1)), scale(n, -h));
+    // Le trou traverse l'épaisseur : de r à g le long de n (pas de corner-pairing
+    // ici, un seul mur, donc les décalages canoniques suffisent).
+    const a = add(add(A, scale(d, s0)), scale(n, r));
+    const b = add(add(A, scale(d, s0)), scale(n, g));
+    const c = add(add(A, scale(d, s1)), scale(n, g));
+    const d2 = add(add(A, scale(d, s1)), scale(n, r));
     return [a, b, c, d2];   // sens inverse du contour CCW
   }
 
@@ -330,7 +390,7 @@ export class PlanGraph {
     const ancienB = w.b;
     const id2 = this._uid('w');
     const w2 = { id: id2, a: mid, b: ancienB, thickness: w.thickness, height: w.height,
-                 elevation: w.elevation, openings: droite };
+                 elevation: w.elevation, justification: w.justification, openings: droite };
 
     w.b = mid;                       // première partie : a → mid (garde l'id)
     w.openings = gauche;
