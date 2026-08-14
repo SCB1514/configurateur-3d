@@ -241,7 +241,54 @@ diff, six étaient faux après vérification dans le code.
   curseur, un clic commet, `Échap` clôt le geste en un seul `pushHistory`
   (pas un par copie). `C` pose un exemplaire dont blockId/finish/couleur
   viennent de la sélection, indépendant dès sa création.
-- **Rectangle de capture** : absent, et c'est le geste le plus attendu en plan.
+- **Sélection façon Rhino** (analysé contre
+  https://www.rhino3d.com/docs/guides/user-guide/selection/ — hors sujet,
+  volontairement : toute sélection de SOUS-objets, cette appli n'édite pas
+  de NURBS/SubD/maillage). FAIT pour les items de bibliothèque
+  (`Viewer`, DeepSeek deepseek-v4-pro, $0,0228, hors quota Anthropic) :
+  - **Rectangle de capture** — enfin fait. Glissé vers la DROITE = fenêtre
+    (trait plein, objets ENTIÈREMENT dedans) ; vers la GAUCHE = recoupement
+    (pointillé, moindre chevauchement suffit) — exactement la convention
+    Rhino. Aperçu en `<div>` écran, projection des 8 coins de la bounding
+    box de chaque objet via `.project(camera)` (le même patron que
+    `coteSous`, déjà dans le fichier). Piège d'architecture identifié et
+    câblé AVANT la délégation (sans quoi le geste aurait cassé la rotation
+    caméra à la souris) : OrbitControls tourne la vue au clic gauche
+    glissé par défaut (déjà coupé en mode plan via `enableRotate=false`,
+    mais actif en 3D/iso) — `_onDown` gèle `enableRotate` dès qu'une
+    fenêtre démarre sur du vide, `_onUp` la restaure à sa valeur
+    mémorisée (pas à `true` en dur, pour ne pas la rallumer en mode plan).
+  - **Maj = ajoute TOUJOURS, Ctrl/Cmd = retire TOUJOURS** — remplace
+    l'ancien bascule unique (Ctrl OU Maj faisaient la même chose : ajouter
+    si absent, retirer si présent). Un Maj-clic sur un objet déjà choisi
+    reste maintenant sans effet au lieu de le désélectionner ; un
+    Ctrl-clic sur du vide ne fait plus rien.
+  Défaut trouvé à l'intégration (pas dans le premier jet de DeepSeek,
+  hors de son contexte puisqu'absent de l'extrait envoyé) : `_onUp`
+  porte déjà un retour anticipé sur tout mouvement > 5px (« orbite, pas un
+  clic »), placé AVANT l'endroit où la résolution de la fenêtre allait
+  être insérée — une vraie fenêtre glissée de plus de 5px n'aurait jamais
+  été atteinte, jetée par ce retour avant même d'être vue. Repéré en
+  relisant le point d'insertion exact dans le fichier réel (pas dans
+  l'extrait fourni), corrigé en plaçant la résolution AVANT ce retour.
+  Vérifié à la main, pas à l'œil : projection des 8 coins d'un objet à
+  l'écran mesurée directement (pas déduite de son centre — un rectangle
+  construit sur seulement 2 coins diagonaux du volume 3D ne correspond
+  PAS à sa silhouette écran réelle, erreur faite une fois pendant la
+  vérification elle-même et corrigée en refaisant la mesure sur les 8
+  coins) ; fenêtre qui sélectionne seulement quand elle contient
+  VRAIMENT toute la boîte projetée, recoupement qui sélectionne au
+  moindre chevauchement sur le MÊME rectangle réduit ; Maj/Ctrl testés
+  dans les deux sens ; `enableRotate` gelé puis restauré à sa valeur
+  d'origine en mode plan ET en 3D.
+  Non repris (réserve, portée volontairement restreinte aux items de
+  bibliothèque pour garder cette passe vérifiable) : les murs/nœuds du
+  bâtiment ont leur PROPRE sélection (`Batiment._selection`,
+  `_selectionFenetre` déjà existante mais sans distinction fenêtre/
+  recoupement, Maj en simple bascule) — même retrofit à leur appliquer
+  dans une prochaine session. Le menu de désambiguïsation (clic sur des
+  objets proches/superposés, Rhino ouvre une liste) et les commandes de
+  sélection par nom/calque/couleur ne sont pas non plus repris.
 - **Repérage** : perpendiculaires et réglages exposés au panneau restent à
   faire (ils existent dans le module). Tangentes, milieu-comme-référence et
   acquisition manuelle sont faits. Les tangentes ont demandé une exception à

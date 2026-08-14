@@ -188,6 +188,11 @@ export class Viewer {
     this._contrainteValeur = null;
     this._dernierPointeur = null;
     this._contrainteHint = null;
+    // Sélection par fenêtre (fenêtre/recoupement, voir _onDown/_selectionFenetre) :
+    // état du geste, hors gizmo — jamais concurrent avec la contrainte ci-dessus.
+    this._marqueeDepart = null;
+    this._marqueeEl = null;
+    this._enableRotateAvant = null;
     this.gizmo.addEventListener('dragging-changed', e => {
       this.controls.enabled = !e.value;
       if (e.value) {
@@ -1143,11 +1148,14 @@ export class Viewer {
       || null;
   }
 
+  /** additive : false = remplace la sélection ; true = AJOUTE uid (Maj,
+   *  jamais de bascule — un uid déjà présent le reste) ; 'remove' = retire
+   *  uid (Ctrl/Cmd) sans jamais rien ajouter. */
   select(uid, additive = false) {
     if (!uid) this.selection = [];
+    else if (additive === 'remove') this.selection = this.selection.filter(u => u !== uid);
     else if (!additive) this.selection = [uid];
-    else if (this.selection.includes(uid)) this.selection = this.selection.filter(u => u !== uid);
-    else this.selection = [...this.selection, uid];
+    else if (!this.selection.includes(uid)) this.selection = [...this.selection, uid];
 
     const dernier = this.selection[this.selection.length - 1];
     const obj = dernier ? this._objet(dernier) : null;
@@ -1671,12 +1679,39 @@ export class Viewer {
     // pointerup de TransformControls (attache avant le notre) remet
     // `this.gizmo.axis` a null, donc c'est au down qu'il faut la lire.
     this._clicAxe = /^[XYZ]$/.test(this.gizmo.axis) ? this.gizmo.axis : null;
+
+    // Sélection par fenêtre : ne démarre que hors gizmo, sur du vide. Un
+    // objet sous le curseur suit son chemin normal (clic simple, résolu
+    // dans _onUp) — seul le vide ouvre la possibilité d'une fenêtre.
+    if (!this._clicAxe && this.editable !== false) {
+      this._setPointer(ev);
+      this.ray.setFromCamera(this.pointer, this.camera);
+      const hits = this.ray.intersectObjects(this._cibles(), true);
+      if (hits.length === 0) {
+        const r = this.canvas.getBoundingClientRect();
+        this._marqueeDepart = { x: ev.clientX - r.left, y: ev.clientY - r.top };
+        // OrbitControls tourne la caméra au clic gauche glissé par défaut
+        // (déjà coupé en mode plan, voir setModePlan) : on la gèle pour la
+        // durée du geste et on la restaure à SA valeur, pas à `true` en dur.
+        this._enableRotateAvant = this.controls.enableRotate;
+        this.controls.enableRotate = false;
+      }
+    }
   }
 
   _onMove(ev) {
     // position du curseur pour la bulle de contrainte numérique (voir constructeur)
     this._dernierPointeur = { x: ev.clientX, y: ev.clientY };
     if (this._contrainteBuffer !== null) this._majIndicateurContrainte();
+
+    // Aperçu de la fenêtre de sélection : prioritaire sur tout le reste
+    // pendant qu'elle est en cours (survol, fantômes...).
+    if (this._marqueeDepart) {
+      const r = this.canvas.getBoundingClientRect();
+      this._majMarqueeEcran({ x: ev.clientX - r.left, y: ev.clientY - r.top });
+      return;
+    }
+
     if (this._beam) {
       this._setPointer(ev);
       this.luminaires?.editerFaisceau(this._beam.g, this._beam.type, this.pointer, this.camera);
@@ -1775,6 +1810,32 @@ export class Viewer {
       return;
     }
     if (ev.button !== 0) return;            // clic droit : voir contextmenu (main.js)
+
+    // Résolution de la fenêtre de sélection : AVANT le retour anticipé
+    // ci-dessous (qui écarte tout mouvement > 5px comme une orbite plutôt
+    // qu'un clic) — c'est justement un mouvement de plus de 5px qui fait
+    // une VRAIE fenêtre, elle serait sinon jetée avant d'être vue.
+    if (this._marqueeDepart) {
+      const r = this.canvas.getBoundingClientRect();
+      const depart = this._marqueeDepart;
+      const courant = { x: ev.clientX - r.left, y: ev.clientY - r.top };
+
+      // Restaure la valeur mémorisée au départ du geste, pas `true` en dur :
+      // en mode plan, enableRotate doit rester false.
+      this.controls.enableRotate = this._enableRotateAvant;
+      this._retirerMarqueeEcran();
+      this._marqueeDepart = null;
+
+      const mode = (ev.ctrlKey || ev.metaKey) ? 'remove' : (ev.shiftKey ? true : false);
+      if (Math.hypot(courant.x - depart.x, courant.y - depart.y) > 5) {
+        this._selectionFenetre(depart, courant, mode);
+      } else if (mode === false) {
+        this.select(null);   // clic simple sur le vide, sans modificateur
+      }
+      this._down = null;
+      return;
+    }
+
     const d = this._down; this._down = null;
     if (!d) return;
     if (Math.hypot(ev.clientX - d.x, ev.clientY - d.y) > 5) return;   // orbite, pas un clic
@@ -1830,9 +1891,12 @@ export class Viewer {
     // Un clic sur une cote ne doit pas changer la sélection.
     if (cote) return;
     const hits = this.ray.intersectObjects(this._cibles(), true);
-    const additif = ev.ctrlKey || ev.shiftKey || ev.metaKey;
-    if (hits.length) this.select(this._uidDe(hits[0].object), additif);
-    else if (!additif) this.select(null);
+    // Maj ajoute TOUJOURS, Ctrl/Cmd retire TOUJOURS — plus de bascule unique
+    // Ctrl-ou-Maj (voir select()) : un clic Maj sur un objet déjà choisi ne
+    // le désélectionne plus, un Ctrl-clic sur du vide ne fait rien.
+    const mode = (ev.ctrlKey || ev.metaKey) ? 'remove' : (ev.shiftKey ? true : false);
+    if (hits.length) this.select(this._uidDe(hits[0].object), mode);
+    else if (mode === false) this.select(null);
   }
 
   /**
@@ -2075,6 +2139,78 @@ export class Viewer {
       if (angle > Math.PI / 2) angle -= Math.PI;
       if (angle < -Math.PI / 2) angle += Math.PI;
       sprite.material.rotation = angle;
+    }
+  }
+
+  /** Crée ou met à jour le rectangle HTML d'aperçu de la fenêtre de
+   *  sélection — en `position:fixed` dans `document.body`, pas dans le
+   *  canvas, pour ignorer tout z-index/overflow de l'interface autour.
+   *  Trait plein si on glisse vers la droite (fenêtre), pointillé vers la
+   *  gauche (recoupement) : la même distinction que Rhino. */
+  _majMarqueeEcran(pointCourant) {
+    const r = this.canvas.getBoundingClientRect();
+    const x0 = r.left + this._marqueeDepart.x, y0 = r.top + this._marqueeDepart.y;
+    const x1 = r.left + pointCourant.x, y1 = r.top + pointCourant.y;
+    if (!this._marqueeEl) {
+      this._marqueeEl = document.createElement('div');
+      Object.assign(this._marqueeEl.style, {
+        position: 'fixed', pointerEvents: 'none', zIndex: '9999', boxSizing: 'border-box',
+        background: 'rgba(61,139,255,.15)', border: '1px solid #3d8bff', display: 'none',
+      });
+      document.body.appendChild(this._marqueeEl);
+    }
+    Object.assign(this._marqueeEl.style, {
+      left: Math.min(x0, x1) + 'px', top: Math.min(y0, y1) + 'px',
+      width: Math.abs(x1 - x0) + 'px', height: Math.abs(y1 - y0) + 'px',
+      borderStyle: pointCourant.x >= this._marqueeDepart.x ? 'solid' : 'dashed',
+      display: 'block',
+    });
+  }
+
+  _retirerMarqueeEcran() {
+    if (this._marqueeEl) this._marqueeEl.style.display = 'none';
+  }
+
+  /** Sélection par fenêtre : depart/courant en pixels canvas. mode :
+   *  false = remplace, true = Maj (ajoute), 'remove' = Ctrl/Cmd (retire).
+   *  Fenêtre (glissé vers la droite) : seuls les objets ENTIÈREMENT dans
+   *  le rectangle sont retenus. Recoupement (vers la gauche) : au moindre
+   *  chevauchement. Ne porte que sur les items de bibliothèque
+   *  (`this.objects`) — les murs du bâtiment ont leur propre sélection,
+   *  domaine séparé, non touché ici. */
+  _selectionFenetre(depart, courant, mode) {
+    const fenetre = courant.x >= depart.x;
+    const minX = Math.min(depart.x, courant.x), maxX = Math.max(depart.x, courant.x);
+    const minY = Math.min(depart.y, courant.y), maxY = Math.max(depart.y, courant.y);
+    const r = this.canvas.getBoundingClientRect();
+
+    const trouves = [];
+    for (const [uid, obj] of this.objects) {
+      const box = new THREE.Box3().setFromObject(obj);
+      if (box.isEmpty()) continue;
+      const pts = this._coinsBox(box).map(c => {
+        const p = c.clone().project(this.camera);
+        return { x: ((p.x + 1) / 2) * r.width, y: ((1 - p.y) / 2) * r.height };
+      });
+      if (fenetre) {
+        if (pts.every(p => p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY)) trouves.push(uid);
+      } else {
+        let minXo = Infinity, maxXo = -Infinity, minYo = Infinity, maxYo = -Infinity;
+        for (const p of pts) {
+          if (p.x < minXo) minXo = p.x; if (p.x > maxXo) maxXo = p.x;
+          if (p.y < minYo) minYo = p.y; if (p.y > maxYo) maxYo = p.y;
+        }
+        if (minXo <= maxX && maxXo >= minX && minYo <= maxY && maxYo >= minY) trouves.push(uid);
+      }
+    }
+
+    if (mode === false) {
+      if (!trouves.length) this.select(null);
+      else { this.select(trouves[0], false); for (let i = 1; i < trouves.length; i++) this.select(trouves[i], true); }
+    } else if (mode === true) {
+      for (const uid of trouves) this.select(uid, true);
+    } else if (mode === 'remove') {
+      for (const uid of trouves) this.select(uid, 'remove');
     }
   }
 
