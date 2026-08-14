@@ -154,8 +154,10 @@ diff, six étaient faux après vérification dans le code.
   attendre le délai de survol, en réutilisant la même cascade d'accrochage
   que le curseur ; un second Ctrl+clic à proximité la retire. Marqueurs
   verts, cohérent avec tout le reste de l'assistance au dessin.
-- **Interface** : trois panneaux flottants qui se recouvrent. Les réunir en un
-  panneau à onglets à droite.
+- **Interface** : lumières et rendu réunis en un seul panneau flottant à
+  onglets (`#tools-panel`, à droite). Bâtiment reste une bascule de la
+  colonne de gauche — il remplace le catalogue, pas un panneau qui flotte,
+  et fusionner l'aurait fait perdre ce comportement pour un gain flou.
 - **Ambiance « Intérieur »** : les quatre existantes éclairent comme un studio
   et délavent une salle fermée dont les luminaires devraient faire le travail.
 - **Plan de coupe** : rend trop pâle, le poché s'écrase sous l'ambiance claire.

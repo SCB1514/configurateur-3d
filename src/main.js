@@ -931,32 +931,27 @@ function wireLumieres() {
     apercu: (on) => app.viewer.luminaires.setApercu(on),
   });
 
-  const bascule = () => {
-    const cache = hote.classList.toggle('hidden');
-    $('#btn-lumieres').classList.toggle('on', !cache);
-    if (!cache) panneau.rafraichir();
-  };
-  $('#btn-lumieres').onclick = bascule;
+  // L'ouverture/fermeture est maintenant du ressort du panneau à onglets
+  // partagé (wireOnglets) : ce module ne fait plus que construire le
+  // contenu et l'exposer, pour que l'onglet actif decide seul de qui se
+  // montre. `app.panneauLumieres` est ce que wireOnglets rafraichit quand
+  // on bascule sur cet onglet.
+  app.panneauLumieres = panneau;
 
   // Poser ou retirer une machine change la liste : elle porte ses propres
-  // appareils, et l'utilisateur s'attend à les y retrouver.
-  app.rafraichirLumieres = () => { if (!hote.classList.contains('hidden')) panneau.rafraichir(); };
+  // appareils, et l'utilisateur s'attend à les y retrouver — mais seulement
+  // si l'onglet est bien celui qu'on regarde, sans quoi c'est du travail
+  // pour rien.
+  app.rafraichirLumieres = () => {
+    if (!$('#tools-panel').classList.contains('hidden')
+        && !$('#tp-pane-lumieres').classList.contains('hidden')) panneau.rafraichir();
+  };
 }
 
 const CLE_RENDU = 'cfg3d:rendu';
 
 function wireRendu() {
-  const panneau = $('#render-panel');
   const rendu = app.viewer.rendu;
-
-  $('#btn-render').onclick = () => {
-    panneau.classList.toggle('hidden');
-    $('#btn-render').classList.toggle('on', !panneau.classList.contains('hidden'));
-  };
-  $('#btn-render-close').onclick = () => {
-    panneau.classList.add('hidden');
-    $('#btn-render').classList.remove('on');
-  };
 
   // les ambiances viennent de render.js : une seule source de vérité
   const chips = $('#env-chips');
@@ -1109,6 +1104,57 @@ function chargerRendu() {
 
   if (memo.focale) app.viewer.setFocale(memo.focale);
   if (memo.rotation) app.viewer.setRotationAuto(true);
+}
+
+/* ══════════════════ panneau à onglets (lumières / rendu) ══════════════════
+   Les deux panneaux flottants avaient chacun leur bouton, leur fermeture,
+   leur logique d'ouverture — deux boites qui pouvaient se retrouver ouvertes
+   en même temps, chacune dans son coin. Un seul panneau les héberge
+   maintenant ; l'onglet actif dit lequel on regarde, jamais les deux à la
+   fois. Ce module ne connaît que des éléments du DOM : `wireLumieres` et
+   `wireRendu` restent responsables du CONTENU de chaque onglet, celui-ci ne
+   fait que décider lequel se montre. */
+function wireOnglets() {
+  const coquille = $('#tools-panel');
+  const onglets = { lumieres: $('#tp-tab-lumieres'), rendu: $('#tp-tab-rendu') };
+  const volets = { lumieres: $('#tp-pane-lumieres'), rendu: $('#tp-pane-rendu') };
+  const boutons = { lumieres: $('#btn-lumieres'), rendu: $('#btn-render') };
+
+  let actif = null;
+
+  const activerOnglet = (nom) => {
+    actif = nom;
+    for (const cle of Object.keys(onglets)) {
+      onglets[cle].classList.toggle('on', cle === nom);
+      volets[cle].classList.toggle('hidden', cle !== nom);
+    }
+    for (const cle of Object.keys(boutons)) boutons[cle].classList.toggle('on', cle === nom);
+    // le contenu de l'onglet lumieres depend de la scene (liste des appareils
+    // posés) : il faut le rafraichir a chaque prise de focus, pas seulement
+    // a l'ouverture du panneau.
+    if (nom === 'lumieres') app.panneauLumieres?.rafraichir();
+  };
+
+  const ouvrir = (nom) => {
+    coquille.classList.remove('hidden');
+    activerOnglet(nom);
+  };
+  const fermer = () => {
+    coquille.classList.add('hidden');
+    for (const cle of Object.keys(boutons)) boutons[cle].classList.remove('on');
+    actif = null;
+  };
+  const estOuvert = (nom) => actif === nom && !coquille.classList.contains('hidden');
+
+  onglets.lumieres.onclick = () => activerOnglet('lumieres');
+  onglets.rendu.onclick = () => activerOnglet('rendu');
+  $('#btn-tools-close').onclick = fermer;
+
+  // Chaque bouton de la barre d'outils rouvre son propre onglet, ou ferme
+  // le panneau si cet onglet est deja celui qu'on regarde — pour que
+  // recliquer sur « Lumieres » referme plutot que de ne rien faire.
+  boutons.lumieres.onclick = () => (estOuvert('lumieres') ? fermer() : ouvrir('lumieres'));
+  boutons.rendu.onclick = () => (estOuvert('rendu') ? fermer() : ouvrir('rendu'));
 }
 
 /* ══════════════════ fond de plan ══════════════════
@@ -1842,6 +1888,7 @@ function wireUI() {
   wirePlan();
   wireRendu();
   wireLumieres();
+  wireOnglets();
   wireBatiment();
 
   $('#preset-select').onchange = describePreset;

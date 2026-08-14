@@ -296,65 +296,72 @@
       <label class="draft-input">Longueur <input type="number" id="draft-length" min="0.01" step="0.01" placeholder="m" title="Saisir une longueur puis Entrée" /></label>
     </div>
 
-    <!-- ══════════ LUMIÈRES ══════════ -->
-    <div id="light-panel" class="light-panel hidden"></div>
-
-    <!-- ══════════ RENDU ET CAMÉRA ══════════ -->
-    <div id="render-panel" class="render-panel hidden">
-      <header>
-        <strong>Rendu et caméra</strong>
-        <button class="icon-btn" id="btn-render-close" title="Fermer">✕</button>
-      </header>
-
-      <div class="rp-block">
-        <label>Ambiance</label>
-        <div class="chips" id="env-chips"></div>
+    <!-- ══════════ OUTILS (Lumières / Rendu) — un seul panneau flottant, à onglets ══════════
+         Deux panneaux qui flottaient chacun dans son coin, avec leur bouton et leur
+         fermeture propres, se disputaient l'écran des qu'on en ouvrait deux a la fois.
+         Un seul panneau, un seul emplacement, l'onglet actif dit ce qu'on regarde. -->
+    <div id="tools-panel" class="tools-panel hidden">
+      <div class="tp-tabs">
+        <button class="tp-tab" id="tp-tab-lumieres" data-tab="lumieres">Lumières</button>
+        <button class="tp-tab" id="tp-tab-rendu" data-tab="rendu">Rendu &amp; caméra</button>
+        <button class="icon-btn" id="btn-tools-close" title="Fermer">✕</button>
       </div>
 
-      <div class="rp-block">
-        <div class="rp-field">
-          <span>Exposition</span>
-          <input type="range" id="rp-expo" min="0.35" max="2.2" step="0.05" />
-          <em id="rp-expo-val">—</em>
-        </div>
-        <div class="rp-field">
-          <span>Ombres</span>
-          <input type="range" id="rp-ombres" min="0" max="1" step="0.05" />
-          <em id="rp-ombres-val">—</em>
-        </div>
-        <div class="rp-field">
-          <span>Occlusion</span>
-          <input type="range" id="rp-ao" min="0" max="1.5" step="0.05" />
-          <em id="rp-ao-val">—</em>
-        </div>
-        <div class="rp-field">
-          <span>Éclat</span>
-          <input type="range" id="rp-bloom" min="0" max="0.8" step="0.02" />
-          <em id="rp-bloom-val">—</em>
-        </div>
+      <div class="tp-pane" id="tp-pane-lumieres" data-pane="lumieres">
+        <div id="light-panel"></div>
       </div>
 
-      <div class="rp-block">
-        <label>Caméra</label>
-        <div class="rp-field">
-          <span>Focale</span>
-          <input type="range" id="rp-focale" min="18" max="135" step="1" />
-          <em id="rp-focale-val">—</em>
+      <div class="tp-pane hidden" id="tp-pane-rendu" data-pane="rendu">
+        <div class="rp-block">
+          <label>Ambiance</label>
+          <div class="chips" id="env-chips"></div>
         </div>
-        <div class="rp-toggles">
-          <label class="rp-check"><input type="checkbox" id="rp-rotation" /> Rotation auto</label>
-          <label class="rp-check"><input type="checkbox" id="rp-sol" /> Sol</label>
-          <label class="rp-check"><input type="checkbox" id="rp-reflets" /> Reflets</label>
-          <label class="rp-check"><input type="checkbox" id="rp-reperes" /> Repères</label>
-          <label class="rp-check"><input type="checkbox" id="rp-qualite" /> Qualité haute</label>
-        </div>
-      </div>
 
-      <footer class="rp-foot">
-        <button class="btn small" id="rp-reset">Réinitialiser</button>
-        <button class="btn small" id="rp-image">Enregistrer l'image</button>
-      </footer>
-      <div class="rp-mesure"><span id="rp-fps">—</span> images/s <em id="rp-gpu"></em></div>
+        <div class="rp-block">
+          <div class="rp-field">
+            <span>Exposition</span>
+            <input type="range" id="rp-expo" min="0.35" max="2.2" step="0.05" />
+            <em id="rp-expo-val">—</em>
+          </div>
+          <div class="rp-field">
+            <span>Ombres</span>
+            <input type="range" id="rp-ombres" min="0" max="1" step="0.05" />
+            <em id="rp-ombres-val">—</em>
+          </div>
+          <div class="rp-field">
+            <span>Occlusion</span>
+            <input type="range" id="rp-ao" min="0" max="1.5" step="0.05" />
+            <em id="rp-ao-val">—</em>
+          </div>
+          <div class="rp-field">
+            <span>Éclat</span>
+            <input type="range" id="rp-bloom" min="0" max="0.8" step="0.02" />
+            <em id="rp-bloom-val">—</em>
+          </div>
+        </div>
+
+        <div class="rp-block">
+          <label>Caméra</label>
+          <div class="rp-field">
+            <span>Focale</span>
+            <input type="range" id="rp-focale" min="18" max="135" step="1" />
+            <em id="rp-focale-val">—</em>
+          </div>
+          <div class="rp-toggles">
+            <label class="rp-check"><input type="checkbox" id="rp-rotation" /> Rotation auto</label>
+            <label class="rp-check"><input type="checkbox" id="rp-sol" /> Sol</label>
+            <label class="rp-check"><input type="checkbox" id="rp-reflets" /> Reflets</label>
+            <label class="rp-check"><input type="checkbox" id="rp-reperes" /> Repères</label>
+            <label class="rp-check"><input type="checkbox" id="rp-qualite" /> Qualité haute</label>
+          </div>
+        </div>
+
+        <footer class="rp-foot">
+          <button class="btn small" id="rp-reset">Réinitialiser</button>
+          <button class="btn small" id="rp-image">Enregistrer l'image</button>
+        </footer>
+        <div class="rp-mesure"><span id="rp-fps">—</span> images/s <em id="rp-gpu"></em></div>
+      </div>
     </div>
   </main>
 
