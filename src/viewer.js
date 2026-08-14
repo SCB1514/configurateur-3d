@@ -178,14 +178,13 @@ export class Viewer {
       this.controls.enabled = !e.value;
       if (e.value) {
         this._captureDepart();
-        if (this._wallEdit) this._wallDepart = this.gizmo.object.position.clone();
       } else {
         this._depart = null;
+        this._pivotStart = null;
         this.clearSnapHints();
+        this._cacherMarqueurSnap();
         if (this._wallEdit) {
-          // mur déplacé au gizmo : on reporte l'écart sur le graphe topologique
-          const delta = this.gizmo.object.position.clone().sub(this._wallDepart || new THREE.Vector3());
-          this.hooks.onWallMove?.(this._wallEdit, delta.x, delta.y);
+          this.hooks.onWallCommit?.(this._wallEdit);
           this._wallEdit = null;
         } else {
           this.hooks.onCommit?.();
@@ -223,6 +222,17 @@ export class Viewer {
     this.setTool('select');   // sélection par défaut (flèche)
     this.setSnap(false);      // aimantation à la grille désactivée par défaut
 
+    /* ---------- pivot du gizmo ----------
+       Le gizmo ne s'accroche pas à l'objet : il s'accroche à un PIVOT
+       invisible posé au CENTRE de la bounding box de la sélection. Les
+       écarts du pivot (translation, rotation, échelle) sont ensuite
+       reportés sur chaque objet, autour de ce centre. */
+    this._pivot = new THREE.Object3D();
+    this._pivot.name = 'pivot-gizmo';
+    this._pivotStart = null;
+    this._depart = null;
+    this.scene.add(this._pivot);
+
     /* ---------- repères de connexion ---------- */
     this.magnet = true;
     this.snapMarker = new THREE.Mesh(
@@ -245,11 +255,21 @@ export class Viewer {
     this.scene.add(this.hintDots);
 
     /* ---------- contour de sélection ---------- */
-    this.selBox = new THREE.Box3Helper(new THREE.Box3(), 0x3d8bff);
+    // orange : la boîte de l'objet choisi (spec outil de sélection).
+    this.selBox = new THREE.Box3Helper(new THREE.Box3(), 0xff9500);
     this.selBox.visible = false;
     if (this.selBox.material) { this.selBox.material.depthTest = false; this.selBox.material.transparent = true; }
     this.selBox.renderOrder = 999;
     this.scene.add(this.selBox);
+
+    /* ---------- contour de survol ---------- */
+    // blanc : la boîte de l'objet sous le curseur, avant le clic de sélection.
+    this.hoverBox = new THREE.Box3Helper(new THREE.Box3(), 0xffffff);
+    this.hoverBox.visible = false;
+    if (this.hoverBox.material) { this.hoverBox.material.depthTest = false; this.hoverBox.material.transparent = true; this.hoverBox.material.opacity = 0.85; }
+    this.hoverBox.renderOrder = 998;
+    this.scene.add(this.hoverBox);
+    this._hoverUid = null;
 
     /* ---------- interaction ---------- */
     this.ray = new THREE.Raycaster();
@@ -729,66 +749,149 @@ export class Viewer {
 
   _readTransform() {
     const obj = this.selected;
-    if (!obj || this._wallEdit) return;
+    if (!obj || !this._depart || !this._pivotStart) return;
     this.rendu?.signalerMouvement();
     this.marquerOmbres();
 
-    /* Un luminaire deplace au gizmo doit rendre compte de sa nouvelle
-       position : sans cela le panneau afficherait encore l'ancienne, et la
-       prochaine saisie au clavier le ferait bondir en arriere. */
-    if (obj.userData.luminaire) {
-      this.luminaires?.noterTransformation?.(obj);
-      this.hooks.onLuminaire?.();
-      return;
-    }
-    const block = this.lib.block(obj.userData.blockId);
+    // Écarts du PIVOT depuis le départ du geste : toute la sélection est
+    // rejouée depuis les positions absolues de départ, jamais cumulée.
+    let dPos = this._pivot.position.clone().sub(this._pivotStart.position);
+    const dRot = this._pivot.rotation.z - this._pivotStart.rotation;
+    let dSca = (this._pivot.scale.x || 1) / (this._pivotStart.scale || 1);
 
-    // Échelle : le gizmo tire un axe à la fois, mais le modèle reste
-    // uniforme. On repère l'axe qui a bougé et on y ramène les deux autres —
-    // ainsi la machine grandit ou rapetisse sans se déformer.
+    // Échelle : le gizmo tire un axe à la fois, le modèle reste uniforme.
     if (this.tool === 'scale') {
-      const x = obj.scale.x, y = obj.scale.y, z = obj.scale.z;
-      const ref = this._scaleRef ?? x;
-      const s = Math.abs(x - ref) > 1e-6 ? x : (Math.abs(y - ref) > 1e-6 ? y : z);
-      obj.scale.set(s, s, s);
+      const ref = this._scaleRef ?? 1;
+      const s = Math.abs(this._pivot.scale.x - ref) > 1e-6 ? this._pivot.scale.x
+        : (Math.abs(this._pivot.scale.y - ref) > 1e-6 ? this._pivot.scale.y : this._pivot.scale.z);
+      this._pivot.scale.set(s, s, s);
       this._scaleRef = s;
+      dSca = (s || 1) / (this._pivotStart.scale || 1);
     }
 
-    // Déplacement de groupe.
-    //
-    // Les positions de départ de TOUTE la sélection sont relevées à l'appui du
-    // gizmo. À chaque image on repart de ces positions absolues et on y ajoute
-    // l'écart parcouru par l'élément tenu. Reporter un écart image après image,
-    // comme le faisait la première version, le cumulait et les machines
-    // s'éloignaient les unes des autres.
-    if (this._depart && this.tool === 'translate') {
-      const ancre = this._depart.get(obj.userData.uid);
-      if (ancre) {
-        const ecart = obj.position.clone().sub(ancre);
-        for (const [uid, origine] of this._depart) {
-          if (uid === obj.userData.uid) continue;
-          const autre = this.objects.get(uid);
-          if (!autre) continue;
+    // Aimantation pendant la TRANSLATION : coins de bounding box, nœuds et
+    // repères intelligents (le même geste qu'au tracé de murs).
+    if (this.tool === 'translate' && this.snap) {
+      dPos = this._snapGizmo(dPos);
+    }
 
-          autre.position.copy(origine).add(ecart);
-          const bloc = this.lib.block(autre.userData.blockId);
-          this.hooks.onTransform?.(uid, {
-            pos: [r4(autre.position.x), r4(autre.position.y),
-                  r4(autre.position.z - (bloc?.baseOffset || 0))],
-            rot: r4(autre.rotation.z / DEG),
-          });
-        }
+    const P = this._pivotStart.position;   // centre du geste (rotation/échelle)
+    const cos = Math.cos(dRot), sin = Math.sin(dRot);
+
+    for (const [uid, dep] of this._depart) {
+      if (dep.mur) continue;
+      const autre = this.objects.get(uid) || this.luminaires?.objet?.(uid);
+      if (!autre) continue;
+
+      // position : rotation et échelle autour du centre, puis translation
+      const rel = dep.position.clone().sub(P);
+      const rx = rel.x * cos - rel.y * sin;
+      const ry = rel.x * sin + rel.y * cos;
+      autre.position.set(
+        P.x + rx * dSca + dPos.x,
+        P.y + ry * dSca + dPos.y,
+        dep.position.z + dPos.z
+      );
+      autre.rotation.z = dep.rotation + dRot;
+      if (this.tool === 'scale') autre.scale.setScalar((dep.scale || 1) * dSca);
+
+      if (dep.luminaire) {
+        this.luminaires?.noterTransformation?.(autre);
+        continue;
+      }
+      const block = this.lib.block(autre.userData.blockId);
+      this.hooks.onTransform?.(uid, {
+        pos: [r4(autre.position.x), r4(autre.position.y),
+              r4(autre.position.z - (block?.baseOffset || 0))],
+        rot: r4(autre.rotation.z / DEG),
+        scale: r4(autre.scale.x),
+      });
+    }
+
+    // Murs : le geste entier (translation + rotation + échelle) est reporté
+    // au graphe topologique, qui déplace les nœuds en conséquence.
+    for (const [uid, dep] of this._depart) {
+      if (!dep.mur) continue;
+      this.hooks.onWallGizmo?.(uid, {
+        dx: dPos.x, dy: dPos.y, angle: dRot, scale: dSca,
+        pivot: [P.x, P.y],
+      });
+    }
+
+    // la boîte orange suit le geste
+    this.selBox.box.copy(this.boundsOf(this.selection) ?? new THREE.Box3());
+  }
+
+  /* ---------- aimantation du gizmo (coins de boîte + repères) ---------- */
+
+  /** Tolérance d'aimantation du gizmo : 10 pixels en mètres, à la distance
+   *  de la cible (ortho ou perspective). */
+  _tolGizmo() {
+    const c = this.camera;
+    if (c.isOrthographicCamera) {
+      return (c.top - c.bottom) / this.canvas.clientHeight * 10 / (c.zoom || 1);
+    }
+    const d = c.position.distanceTo(this._pivot.position);
+    return 2 * d * Math.tan(c.fov * Math.PI / 360) / this.canvas.clientHeight * 10;
+  }
+
+  /** Les 8 coins d'une boîte. */
+  _coinsBox(box) {
+    const { min, max } = box;
+    return [
+      new THREE.Vector3(min.x, min.y, min.z), new THREE.Vector3(max.x, min.y, min.z),
+      new THREE.Vector3(min.x, max.y, min.z), new THREE.Vector3(max.x, max.y, min.z),
+      new THREE.Vector3(min.x, min.y, max.z), new THREE.Vector3(max.x, min.y, max.z),
+      new THREE.Vector3(min.x, max.y, max.z), new THREE.Vector3(max.x, max.y, max.z),
+    ];
+  }
+
+  /** Candidats d'aimantation : coins des bounding box des objets non
+   *  sélectionnés + points du graphe (nœuds, milieux, intersections,
+   *  repères intelligents) fournis par le bâtiment. */
+  _candidatsSnap() {
+    const pts = [];
+    for (const [uid, obj] of this.objects) {
+      if ((this.selection || []).includes(uid)) continue;
+      const box = new THREE.Box3().setFromObject(obj);
+      for (const c of this._coinsBox(box)) pts.push({ x: c.x, y: c.y, z: c.z, type: 'coin' });
+    }
+    const graphe = this.hooks.snapPoints?.() || [];
+    for (const p of graphe) pts.push(p);
+    return pts;
+  }
+
+  /** Aimante la translation : le centre ET les 8 coins de la boîte en
+   *  mouvement cherchent le candidat le plus proche ; le pivot est ajusté
+   *  pour que le point touche le candidat. Renvoie l'écart final. */
+  _snapGizmo(dPos) {
+    const candidats = this._candidatsSnap();
+    if (!candidats.length || !this.selBox.visible) { this._cacherMarqueurSnap(); return dPos; }
+    const tol = this._tolGizmo();
+    const box = this.selBox.box.clone().translate(dPos);
+    const centre = box.getCenter(new THREE.Vector3());
+    const coins = this._coinsBox(box);
+    let meilleur = null, meilleureD = tol;
+    for (const pt of [centre, ...coins]) {
+      for (const c of candidats) {
+        const d = Math.hypot(pt.x - c.x, pt.y - c.y);
+        if (d < meilleureD) { meilleureD = d; meilleur = { pt, c }; }
       }
     }
+    if (!meilleur) { this._cacherMarqueurSnap(); return dPos; }
+    const ajuste = new THREE.Vector3(meilleur.c.x - meilleur.pt.x, meilleur.c.y - meilleur.pt.y, 0);
+    this._pivot.position.add(ajuste);
+    this._montrerMarqueurSnap(meilleur.c);
+    return dPos.add(ajuste);
+  }
 
-    const off = block?.baseOffset || 0;
-    let z = obj.position.z - off;
-    if (Math.abs(z) < 1e-4) z = 0;
-    this.hooks.onTransform?.(obj.userData.uid, {
-      pos: [r4(obj.position.x), r4(obj.position.y), r4(z)],
-      rot: r4(obj.rotation.z / DEG),
-      scale: r4(obj.scale.x),
-    });
+  _montrerMarqueurSnap(p) {
+    this.snapMarker.position.set(p.x, p.y, p.z ?? this._pivot.position.z);
+    this.snapMarker.visible = true;
+  }
+
+  _cacherMarqueurSnap() {
+    this.snapMarker.visible = false;
   }
 
   /* ══════════ sélection ══════════
@@ -829,13 +932,13 @@ export class Viewer {
     this.selected = obj || null;
 
     if (obj) {
-      // Les murs se manipulent via le graphe topologique : on leur donne
-      // quand même la flèche de déplacement (translation seule), dont l'écart
-      // est reporté sur le graphe à la fin du geste. En mode « sélection »,
-      // aucun gizmo : on choisit seulement.
+      // Le gizmo s'accroche au PIVOT posé au centre de la bounding box de la
+      // sélection. Toutes les options (translation, rotation, échelle) sont
+      // disponibles pour tout objet sélectionnable, y compris les murs —
+      // l'écart est alors reporté sur le graphe topologique.
+      this._poserPivot();
       if (this.editable !== false && this.tool !== 'select') {
-        this.gizmo.attach(obj); this.gizmo.visible = true;
-        if (obj.userData.batiment) { this.gizmo.setMode('translate'); this.gizmo.showZ = false; }
+        this.gizmo.attach(this._pivot); this.gizmo.visible = true;
       } else {
         this.gizmo.detach(); this.gizmo.visible = false;
       }
@@ -850,22 +953,58 @@ export class Viewer {
       this.selBox.visible = false;
       this._wallEdit = null;
     }
+    // le clic vient de changer la sélection : le survol repartira de zéro
+    // (la boîte blanche ne doit pas chevaucher la boîte orange)
+    this.hoverBox.visible = false;
+    this._hoverUid = null;
 
     this.hooks.onSelect?.(obj ? obj.userData.uid : null, this.selection);
+  }
+
+  /** Place le pivot au centre de la bounding box de la sélection, remis à
+   *  zéro en rotation et en échelle. */
+  _poserPivot() {
+    const box = this.boundsOf(this.selection);
+    if (box) {
+      box.getCenter(this._pivot.position);
+    } else {
+      this._pivot.position.copy(this.selected?.position || new THREE.Vector3());
+    }
+    this._pivot.rotation.set(0, 0, 0);
+    this._pivot.scale.set(1, 1, 1);
   }
 
   /** Les objets actuellement choisis. */
   get selectedUids() { return this.selection || []; }
 
-  /** Positions de départ de la sélection, relevées à l'appui du gizmo. */
+  /** État de départ de la sélection ET du pivot, relevé à l'appui du gizmo :
+   *  positions, rotations, échelles absolues — tout le geste est ensuite
+   *  rejoué depuis ces valeurs (jamais d'écart cumulé image après image). */
   _captureDepart() {
     this._depart = null;
-    if (!this.selected || (this.selection || []).length < 2) return;
+    this._pivotStart = null;
+    if (!this.selected) return;
 
+    this._scaleRef = 1;
+    this._pivotStart = {
+      position: this._pivot.position.clone(),
+      rotation: this._pivot.rotation.z,
+      scale: this._pivot.scale.x || 1,
+    };
     this._depart = new Map();
     for (const uid of this.selection) {
-      const obj = this.objects.get(uid);
-      if (obj) this._depart.set(uid, obj.position.clone());
+      const obj = this.objects.get(uid) || this.luminaires?.objet?.(uid);
+      if (obj) {
+        this._depart.set(uid, {
+          mur: false,
+          luminaire: !!obj.userData.luminaire,
+          position: obj.position.clone(),
+          rotation: obj.rotation.z,
+          scale: obj.scale.x || 1,
+        });
+      } else {
+        this._depart.set(uid, { mur: true });   // mur : le graphe est appliqué au geste
+      }
     }
   }
 
@@ -881,12 +1020,13 @@ export class Viewer {
     this.gizmo.setMode(tool);
     if (tool === 'rotate') { this.gizmo.showX = false; this.gizmo.showY = false; this.gizmo.showZ = true; }
     else { this.gizmo.showX = this.gizmo.showY = this.gizmo.showZ = true; }
-    if (tool === 'scale') this._scaleRef = this.selected?.scale.x ?? 1;
-    // un objet déjà sélectionné : on lui rattache le gizmo quand on quitte la
-    // sélection pour un outil de transformation
+    if (tool === 'scale') this._scaleRef = 1;
+    // un objet déjà sélectionné : on rattache le gizmo au PIVOT (au centre de
+    // la bounding box) quand on quitte la sélection pour un outil de
+    // transformation — toutes les options pour tout objet sélectionnable.
     if (this.selected && this.editable !== false) {
-      if (this.selected.userData.batiment) { this.gizmo.setMode('translate'); this.gizmo.showZ = false; }
-      this.gizmo.attach(this.selected);
+      this._poserPivot();
+      this.gizmo.attach(this._pivot);
       this.gizmo.visible = true;
     }
   }
@@ -1139,7 +1279,7 @@ export class Viewer {
   }
 
   /* ══════════ pose d'un bloc ══════════ */
-  startPlacing(blockId, finish) {
+  startPlacing(blockId, finish, color = null) {
     this.cancelPlacing();
     const block = this.lib.block(blockId);
     if (!block) return;
@@ -1160,6 +1300,7 @@ export class Viewer {
     this.ghostBlock = block;
     this.ghostRot = 0;
     this.ghostFinish = finish;
+    this.ghostColor = color;
     this.select(null);
   }
 
@@ -1167,6 +1308,58 @@ export class Viewer {
     if (this.ghost) { this.scene.remove(this.ghost); this.ghost = null; this.ghostBlock = null; }
     this.clearSnapHints();
   }
+
+  /* ---- copie par geste (spec 1.2) ----
+     Un fantôme composé des CLONES translucides de la sélection suit le
+     curseur à partir d'un point de base. Chaque clic commet une copie et on
+     RESTE en mode copie (Revit) ; l'application ne pousse l'historique
+     qu'une seule fois, à la fin du geste (Échap). */
+  startCopyGhost(uids) {
+    this.cancelCopyGhost();
+    this._copyGhost = new THREE.Group();
+    this._copyUids = uids;
+    const box = new THREE.Box3();
+    for (const uid of uids) {
+      const obj = this.objects.get(uid);
+      if (obj) box.expandByObject(obj);
+    }
+    if (box.isEmpty()) { this._copyGhost = null; this._copyUids = null; return; }
+    const base = box.getCenter(new THREE.Vector3());
+    this._copyBase = base;
+    for (const uid of uids) {
+      const obj = this.objects.get(uid);
+      if (!obj) continue;
+      const clone = obj.clone(true);
+      clone.traverse(o => {
+        if (o.isMesh && o.material) {
+          o.material = o.material.clone();
+          o.material.transparent = true;
+          o.material.opacity = 0.55;
+          o.material.depthWrite = false;
+        }
+      });
+      clone.position.sub(base);       // position RELATIVE au centre de sélection
+      clone.userData.uid = uid;       // lien vers l'original, pour le commit
+      this._copyGhost.add(clone);
+    }
+    this._copyGhost.position.copy(base);
+    this._copyGhost.visible = true;
+    this.scene.add(this._copyGhost);
+    this.select(null);                // le fantôme EST la sélection visuelle
+    this.demanderImage(2);
+  }
+
+  cancelCopyGhost() {
+    if (this._copyGhost) {
+      this.scene.remove(this._copyGhost);
+      this._copyGhost = null;
+      this._copyUids = null;
+      this._copyBase = null;
+      this.demanderImage(2);
+    }
+  }
+
+  get copyGhost() { return !!this._copyGhost; }
 
   rotateGhost(deg) {
     if (!this.ghost) return;
@@ -1184,7 +1377,8 @@ export class Viewer {
       const h = hits[0];
       const n = h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld) : null;
       x = h.point.x; y = h.point.y;
-      const box = new THREE.Box3().setFromObject(rootOf(h.object, this.scene));
+      const touche = this._objet(this._uidDe(h.object)) || h.object;
+      const box = new THREE.Box3().setFromObject(touche);
       if (n && n.z > 0.5) {
         z = box.max.z;                     // on empile sur la face supérieure
         stacked = true;                    // hauteur exacte : pas d'aimantation en Z
@@ -1245,6 +1439,17 @@ export class Viewer {
       this.demanderImage(2);
       return;
     }
+    if (this._copyGhost) {
+      this.demanderImage(2);
+      const p = this._dropPoint(ev);
+      if (!p) { this._copyGhost.visible = false; return; }
+      this._copyGhost.visible = true;
+      const x = Math.round(p.x / this.gridStep) * this.gridStep;
+      const y = Math.round(p.y / this.gridStep) * this.gridStep;
+      this._copyGhost.position.set(x, y, this._copyBase.z);
+      return;
+    }
+    this._majSurvol(ev);
     if (!this.ghost) return;
     this.demanderImage(2);
     const p = this._dropPoint(ev);
@@ -1254,6 +1459,29 @@ export class Viewer {
     this.ghost.position.copy(t.origin);
     this.ghost.rotation.z = t.yaw * DEG;
     this.showSnapHints(this.ghostBlock, t.snap, null);
+  }
+
+  /** Survol : boîte blanche autour de l'objet sous le curseur (spec outil de
+   *  sélection). Elle s'efface dès que l'objet est choisi — la boîte orange
+   *  de sélection prend le relais. */
+  _majSurvol(ev) {
+    if (this.editable === false) { this.hoverBox.visible = false; this._hoverUid = null; return; }
+    this._setPointer(ev);
+    this.ray.setFromCamera(this.pointer, this.camera);
+    const hits = this.ray.intersectObjects(this._cibles(), true);
+    const uid = hits.length ? this._uidDe(hits[0].object) : null;
+    if (uid === this._hoverUid) return;          // rien ne change
+    this._hoverUid = uid;
+    if (uid && !(this.selection || []).includes(uid)) {
+      const obj = this._objet(uid);
+      if (obj) {
+        this.hoverBox.box.copy(new THREE.Box3().setFromObject(obj));
+        this.hoverBox.visible = true;
+      }
+    } else {
+      this.hoverBox.visible = false;
+    }
+    this.demanderImage(1);
   }
 
   /** Position/rotation du fantôme : magnétisme prioritaire sur la grille. */
@@ -1271,10 +1499,31 @@ export class Viewer {
     this._setPointer(ev);
     this.ray.setFromCamera(this.pointer, this.camera);
     const hits = this.ray.intersectObjects(this._cibles(), true);
-    return hits.length ? rootOf(hits[0].object, this.scene).userData.uid : null;
+    return hits.length ? this._uidDe(hits[0].object) : null;
+  }
+
+  /** Identifiant porté par l'objet touché ou par un ancêtre proche : les
+   *  murs vivent dans le groupe « batiment », leur userData.uid est sur le
+   *  maillage lui-même, pas sur la racine de la scène. */
+  _uidDe(obj) {
+    let o = obj;
+    while (o && !o.userData?.uid) o = o.parent;
+    return o?.userData?.uid ?? null;
   }
 
   _onUp(ev) {
+    if (this._copyGhost) {
+      if (ev.button !== 0) return;
+      const delta = {
+        x: this._copyGhost.position.x - this._copyBase.x,
+        y: this._copyGhost.position.y - this._copyBase.y,
+        z: this._copyGhost.position.z - this._copyBase.z,
+      };
+      this.hooks.onCopy?.(this._copyUids, delta);
+      // la nouvelle base suit le fantôme : la copie suivante repart de là
+      this._copyBase = this._copyGhost.position.clone();
+      return;
+    }
     if (this._beam) {
       this._beam = null;
       this.controls.enabled = true;
@@ -1298,6 +1547,7 @@ export class Viewer {
           finish: this.ghostFinish,
           connected: !!t.snap,
         };
+        if (this.ghostColor) pose.color = this.ghostColor;
       }
       // on quitte le mode pose AVANT de prévenir l'application, pour qu'elle
       // voie l'état réel (fantôme absent) et range l'indication à l'écran
@@ -1337,7 +1587,7 @@ export class Viewer {
     if (cote) return;
     const hits = this.ray.intersectObjects(this._cibles(), true);
     const additif = ev.ctrlKey || ev.shiftKey || ev.metaKey;
-    if (hits.length) this.select(rootOf(hits[0].object, this.scene).userData.uid, additif);
+    if (hits.length) this.select(this._uidDe(hits[0].object), additif);
     else if (!additif) this.select(null);
   }
 
@@ -1348,14 +1598,16 @@ export class Viewer {
   applyGizmoAxis(axe, valeur) {
     const obj = this.selected;
     if (!obj) return;
+    // la saisie numérique agit sur le PIVOT, comme le geste à la souris
+    if (!this._depart) this._captureDepart();
     if (this.tool === 'translate') {
       const i = 'XYZ'.indexOf(axe);
       if (i < 0) return;
-      obj.position.setComponent(i, obj.position.getComponent(i) + valeur);
+      this._pivot.position.setComponent(i, this._pivot.position.getComponent(i) + valeur);
     } else if (this.tool === 'rotate') {
-      obj.rotation.z += valeur * DEG;
+      this._pivot.rotation.z += valeur * DEG;
     } else if (this.tool === 'scale') {
-      obj.scale.set(valeur, valeur, valeur);
+      this._pivot.scale.set(valeur, valeur, valeur);
     }
     this._readTransform();
     this.hooks.onCommit?.();
@@ -1697,9 +1949,4 @@ export class Viewer {
 }
 
 /* ══════════ utilitaires ══════════ */
-function rootOf(obj, scene) {
-  let o = obj;
-  while (o.parent && o.parent !== scene) o = o.parent;
-  return o;
-}
 const r4 = v => Math.round(v * 1e4) / 1e4;

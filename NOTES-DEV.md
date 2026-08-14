@@ -105,6 +105,18 @@ que sa normale soit franche. Un test par indices déclare tout ouvert.
 **Interroger le DOM avant de suspecter la scène.** Une forme claire en
 surimpression, cherchée quatre fois dans le rendu 3D, était un `<div>`.
 
+**Un champ ajouté à un mur (justification, verrou) doit être ajouté à
+`Batiment.serialiser()`/`restaurer()`, pas seulement à `addWall`.**
+L'historique (undo/redo) sérialise le graphe entier à chaque geste ; un champ
+absent de ces deux fonctions survit à la création mais disparaît au premier
+Ctrl+Z — trouvé après coup en relisant, pas en cherchant.
+
+**Pas de dalle ni de plafond automatiques en pièce fermée.** Décision
+délibérée, pas un oubli : `_dalle()` et ses matériaux ont été retirés de
+`generer3D()`. Si le besoin revient, le repère est `detectRooms()`, toujours
+là pour les statistiques (« X pièce(s) ») — seule la génération de géométrie
+a été retirée.
+
 ---
 
 ## Ce qui a été appris du rendu de référence
@@ -158,8 +170,25 @@ diff, six étaient faux après vérification dans le code.
 
 ## En cours
 
-- **Sélection multiple** : le moteur a `_selection` avec gestion du Maj, mais
-  un gizmo commun à plusieurs objets n'est pas vérifié.
+- **Sélection multiple** : FAIT. Le gizmo s'accroche désormais à un pivot
+  invisible posé au centre de la bounding box de la sélection
+  (`Viewer._pivot`), jamais à l'objet lui-même — items, murs, ou un mélange
+  des deux dans la même sélection, tous rejoués depuis leurs positions de
+  départ (`_captureDepart`), jamais cumulés image après image. Un mur reçoit
+  désormais rotation et échelle en plus de la translation (avant : translation
+  seule) ; le geste est reporté au graphe topologique via `Batiment
+  .transformerMur()`. Vérifié dans le navigateur : translation, rotation 90°
+  et échelle ×2 sur un mur donnent des positions de nœuds exactes ; une
+  sélection mixte (un mur + un item) bouge des deux côtés en un seul geste.
+- **Verrouillage** (module 4.1 de la spec) : FAIT, items et murs. Un mur
+  verrouillé refuse `_scinder`/`_deplacerExtremite`/`_aligner`/le glisser de
+  poignée ; un item verrouillé refuse le gizmo (`onTransform` le remet à sa
+  place). Boutons dans les deux panneaux d'inspection.
+- **Copier par geste** (module 1.2) et **Créer similaire** (module 4.2) :
+  FAITS. `Maj+D` fait suivre un fantôme translucide de la sélection au
+  curseur, un clic commet, `Échap` clôt le geste en un seul `pushHistory`
+  (pas un par copie). `C` pose un exemplaire dont blockId/finish/couleur
+  viennent de la sélection, indépendant dès sa création.
 - **Rectangle de capture** : absent, et c'est le geste le plus attendu en plan.
 - **Repérage** : perpendiculaires et réglages exposés au panneau restent à
   faire (ils existent dans le module). Tangentes, milieu-comme-référence et

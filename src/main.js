@@ -53,10 +53,30 @@ async function boot() {
 
   app.viewer = new Viewer($('#canvas'), {
     onPlace: item => placeItem(item),
+    onCopy: (uids, delta) => {
+      for (const uid of uids) {
+        const it = find(uid);
+        if (!it) continue;
+        const copy = {
+          ...it, uid: newUid(),
+          pos: [it.pos[0] + delta.x, it.pos[1] + delta.y, it.pos[2] + delta.z],
+        };
+        app.state.items.push(copy);
+        app.viewer.addItem(copy);
+      }
+      // PAS de pushHistory par copie : un seul à la fin du geste (Échap)
+      refreshAll();
+    },
     onSelect: (uid, selection) => onSelect(uid, selection),
     onTransform: (uid, patch) => {
       const it = find(uid);
-      if (it) { Object.assign(it, patch); refreshSelectionPanel(); refreshDimensions(); scheduleSave(); }
+      if (!it) return;
+      if (it.verrouille) {
+        // verrouillé : le gizmo a déjà bougé l'objet 3D, on le remet à sa place
+        app.viewer.updateItem(it);
+        return;
+      }
+      Object.assign(it, patch); refreshSelectionPanel(); refreshDimensions(); scheduleSave();
     },
     onCommit: () => pushHistory(),
     onLuminaire: () => app.rafraichirLumieres?.(),
@@ -68,16 +88,19 @@ async function boot() {
     },
     onDimension: (axis, valeur, cx, cy) => editDimension(axis, valeur, cx, cy),
     onGizmoValue: (tool, axe, cx, cy) => editGizmoValue(tool, axe, cx, cy),
-    onWallMove: (wallId, dx, dy) => {
-      const g = app.batiment.graph;
-      const w = g.walls.get(wallId);
-      if (!w) return;
-      for (const nid of [w.a, w.b]) {
-        const n = g.nodes.get(nid);
-        if (n) { n.x += dx; n.y += dy; }
-      }
-      app.batiment.generer3D();
+    // points d'aimantation du gizmo : le graphe du bâtiment les fournit
+    snapPoints: () => app.batiment.pointsSnap(),
+    // geste de gizmo sur un mur : translation + rotation + échelle reportées
+    // au graphe topologique (positions originales mémorisées au premier appel)
+    onWallGizmo: (wallId, t) => {
+      app.batiment.transformerMur(wallId, t);
+      refreshSelectionPanel();
+    },
+    // fin du geste : purge + régénération 3D + historique, une seule fois
+    onWallCommit: (wallId) => {
+      app.batiment.finGesteMur(wallId);
       app.viewer.select(wallId);      // re-sélection sur le nouveau maillage
+      pushHistory();
     },
   });
   app.viewer.setEditable(!app.viewonly);
@@ -625,6 +648,36 @@ function duplicateSelected() {
   for (const uid of copies.slice(1)) app.viewer.select(uid, true);
   pushHistory();
   refreshAll();
+}
+
+/** Copier par geste (spec 1.2) : généralise duplicateSelected au geste souris.
+ *  Un fantôme translucide de la sélection suit le curseur ; chaque clic commet
+ *  une copie et on reste en mode copie (Revit). Un SEUL pushHistory à la fin
+ *  du geste entier (Échap), pas un par copie. */
+function demarrerCopie() {
+  const uids = app.selection?.length ? app.selection : (app.selected ? [app.selected] : []);
+  if (!uids.length) { toast('Sélectionnez un ou plusieurs éléments', true); return; }
+  if (app.viewer.ghost) stopPlacing();
+  app.viewer.startCopyGhost(uids);
+  toast('Cliquez pour copier — Échap pour terminer');
+}
+
+/** Créer similaire (spec 4.2) : pas une copie géométrique, une POSE dont le
+ *  blockId/finish/color viennent de la sélection au lieu du catalogue. Le
+ *  fantôme suit le curseur comme n'importe quelle pose ; chaque clic commet
+ *  un exemplaire neuf, indépendant de l'original dès sa création. */
+function creerSimilaire() {
+  const it = find(app.selected);
+  if (!it) { toast('Sélectionnez un élément', true); return; }
+  const b = app.lib.block(it.blockId);
+  if (!b) {
+    // modèle retiré de la bibliothèque en cours de session
+    toast('Modèle indisponible dans cette bibliothèque', true);
+    return;
+  }
+  app.viewer.startPlacing(it.blockId, it.finish, it.color || null);
+  $('#placing-hint').classList.remove('hidden');
+  $$('.card').forEach(c => c.classList.toggle('on', c.dataset.id === it.blockId));
 }
 
 function clearAll() {
@@ -1236,9 +1289,7 @@ function wireBatiment() {
     if (app.batiment.etatNom === 'repos') app.batiment.generer3D();
     else app.batiment.arreter();       // sort du tracé → génère le 3D et l'affiche
     majStats();
-    toast(app.batiment.graph.detectRooms().length
-      ? 'Bâtiment généré (murs + dalles + plafonds)'
-      : 'Murs générés — aucune pièce fermée');
+    toast('Bâtiment généré (murs)');
   };
   $('#btn-murs-vider').onclick = () => {
     app.batiment.vider();
@@ -1598,6 +1649,7 @@ function onSelect(uid, selection) {
     $('#wall-height').value = w.height;
     $('#wall-elevation').value = w.elevation || 0;
     $('#wall-justification').value = w.justification || 'centre';
+    $('#btn-wall-lock').textContent = w.verrouille ? 'Déverrouiller' : 'Verrouiller';
   }
   refreshSelectionPanel();
   refreshDimensions();
@@ -1777,6 +1829,11 @@ function refreshSelectionPanel() {
       fx.appendChild(s);
     }
   } else fr.classList.add('hidden');
+
+  const verrou = !!it.verrouille;
+  const btnLock = $('#sel-lock');
+  btnLock.textContent = verrou ? 'Déverrouiller' : 'Verrouiller';
+  btnLock.classList.toggle('on', verrou);
 }
 
 /* ══════════════════ sauvegarde locale ══════════════════ */
@@ -1841,6 +1898,7 @@ function wireUI() {
 
   $('#btn-delete').onclick = deleteSelected;
   $('#btn-duplicate').onclick = duplicateSelected;
+  $('#btn-similar').onclick = creerSimilaire;
   $('#btn-undo').onclick = undo;
   $('#btn-redo').onclick = redo;
   $('#btn-clear').onclick = clearAll;
@@ -1873,6 +1931,15 @@ function wireUI() {
     app.viewer.updateItem(it);
     pushHistory(); refreshSelectionPanel();
   };
+  // — verrouillage d'élément : un drapeau, jamais un geste géométrique
+  $('#sel-lock').onclick = () => {
+    const it = find(app.selected);
+    if (!it) return;
+    it.verrouille = !it.verrouille;
+    pushHistory();
+    refreshSelectionPanel();
+    toast(it.verrouille ? 'Élément verrouillé' : 'Élément déverrouillé');
+  };
 
   // — panneau « mur sélectionné »
   /* Modifier un mur : reconstruire, redessiner, et retenir le geste.
@@ -1894,6 +1961,12 @@ function wireUI() {
   $('#wall-height').onchange = e => majMur({ height: Math.max(1, Number(e.target.value)) });
   $('#wall-elevation').onchange = e => majMur({ elevation: Number(e.target.value) || 0 });
   $('#wall-justification').onchange = e => majMur({ justification: e.target.value });
+  $('#btn-wall-lock').onclick = () => {
+    if (!app.selectedWall) return;
+    app.batiment.basculerVerrouMur(app.selectedWall);
+    const w = app.batiment.graph.walls.get(app.selectedWall);
+    if (w) $('#btn-wall-lock').textContent = w.verrouille ? 'Déverrouiller' : 'Verrouiller';
+  };
   $('#btn-wall-del').onclick = () => deleteSelected();
   $('#btn-wall-dup').onclick = () => {
     if (!app.selectedWall) return;
@@ -2072,10 +2145,15 @@ function wireUI() {
       else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
       return;
     }
-    if (e.key === 'Escape') { stopPlacing(); clearCompatible(); app.viewer.select(null); }
+    if (e.key === 'Escape') {
+      if (app.viewer.copyGhost) { app.viewer.cancelCopyGhost(); pushHistory(); toast('Copies terminées'); }
+      else { stopPlacing(); clearCompatible(); app.viewer.select(null); }
+    }
     else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); }
     else if (k === 'v') $('[data-tool="select"]').click();
+    else if (k === 'd' && e.shiftKey) demarrerCopie();
     else if (k === 'd') duplicateSelected();
+    else if (k === 'c') creerSimilaire();
     else if (k === 'f') app.viewer.fit();
     else if (k === 'g') $('[data-tool="translate"]').click();
     else if (k === 's') $('[data-tool="scale"]').click();

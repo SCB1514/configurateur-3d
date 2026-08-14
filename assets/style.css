@@ -341,6 +341,7 @@ kbd{background:var(--panel-2);border:1px solid var(--line);border-radius:4px;pad
 .btn.primary:hover{background:var(--accent-2)}
 .btn.ghost{background:transparent;border-color:transparent;color:var(--txt-dim);font-weight:500}
 .btn.ghost:hover{color:var(--danger);border-color:var(--line)}
+.btn.on{background:var(--accent);border-color:var(--accent);color:#fff}
 .btn-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 .icon-btn{background:none;border:0;color:var(--txt-dim);cursor:pointer;font-size:16px;padding:4px}
 

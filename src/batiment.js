@@ -18,8 +18,6 @@ import { Brush, Evaluator, SUBTRACTION } from '../vendor/three/addons/csg/index.
    ============================================================ */
 
 const MATERIAU_MUR = new THREE.MeshStandardMaterial({ color: 0xcfd4db, roughness: 0.88, metalness: 0.02 });
-const MATERIAU_SOL = new THREE.MeshStandardMaterial({ color: 0x5c6370, roughness: 0.92, metalness: 0, side: THREE.DoubleSide });
-const MATERIAU_PLAFOND = new THREE.MeshStandardMaterial({ color: 0xe9ebef, roughness: 1, metalness: 0, side: THREE.DoubleSide });
 const MATERIAU_BOIS = new THREE.MeshStandardMaterial({ color: 0x8a5a2b, roughness: 0.55, metalness: 0.05 });
 const MATERIAU_CADRE = new THREE.MeshStandardMaterial({ color: 0x5d4630, roughness: 0.6, metalness: 0.05 });
 const MATERIAU_VITRE = new THREE.MeshStandardMaterial({ color: 0xa8d8ea, roughness: 0.05, metalness: 0.2, transparent: true, opacity: 0.4 });
@@ -40,7 +38,7 @@ const MATERIAU_PROXY = new THREE.MeshBasicMaterial({ color: 0x6ea8ff, side: THRE
 const MATERIAU_PROXY_SEL = new THREE.MeshBasicMaterial({ color: 0xffb020, side: THREE.DoubleSide, transparent: true, opacity: 0.85, depthWrite: false });
 
 // Matériaux du bâti que le plan de coupe clive (pas les équipements de la bibliothèque).
-const MATERIAUX_CLIVES = [MATERIAU_MUR, MATERIAU_SOL, MATERIAU_PLAFOND];
+const MATERIAUX_CLIVES = [MATERIAU_MUR];
 
 const evaluator = new Evaluator();
 
@@ -153,6 +151,7 @@ class EtatRepos extends Etat {
     if (ev.button !== 0) return;
     const nid = this.b._poigneeSous(ev);
     if (nid == null) return;
+    if (this.b._noeudVerrouille(nid)) { this.b._onMessage?.('Mur verrouillé', true); return; }
     ev.stopPropagation();
     ev.preventDefault();
     this._dragNoeud = nid;
@@ -225,6 +224,10 @@ class EtatMur extends Etat {
       // édition : saisir un nœud pour le déplacer/sélectionner, sinon fenêtre
       const node = this.b.graph.nodeSous(p, this.b._tolerancePixels(p, 20));
       if (node) {
+        if (this.b._noeudVerrouille(node.id)) {
+          this.b._onMessage?.('Mur verrouillé', true);
+          return;
+        }
         this._drag = { type: 'node', id: node.id };
         this._dragBouge = false;
       } else {
@@ -1720,6 +1723,7 @@ export class Batiment {
   _scinder(wallId, s) {
     const w = this.graph.walls.get(wallId);
     if (!w) return { ok: false, message: 'Aucun mur' };
+    if (w.verrouille) return { ok: false, message: 'Mur verrouillé' };
     if (s <= 1e-6 || s >= 1 - 1e-6) return { ok: false, message: 'Coupe impossible à une extrémité' };
     for (const o of w.openings) {
       if (o.s0 < s && s < o.s1) return { ok: false, message: 'Coupe impossible : traverse une ouverture' };
@@ -1740,6 +1744,7 @@ export class Batiment {
   _deplacerExtremite(wallId, extremite, vers, refWallId = null) {
     const w = this.graph.walls.get(wallId);
     if (!w) return { ok: false, message: 'Aucun mur' };
+    if (w.verrouille) return { ok: false, message: 'Mur verrouillé' };
     const f = this.graph.wallFrame(w);
     const nid = extremite === 'a' ? w.a : w.b;
     const F = extremite === 'a' ? f.B : f.A;       // extrémité FIXE
@@ -1800,6 +1805,7 @@ export class Batiment {
     const r = this.graph.walls.get(refWallId);
     if (!w || !r) return { ok: false, message: 'Aucun mur' };
     if (wallId === refWallId) return { ok: false, message: 'Choisissez un AUTRE mur' };
+    if (w.verrouille) return { ok: false, message: 'Mur verrouillé' };
     const fw = this.graph.wallFrame(w);
     const fr = this.graph.wallFrame(r);
 
@@ -1850,6 +1856,81 @@ export class Batiment {
     this._reconstruireProxy();
     this._onChange();
     return { ok: true };
+  }
+
+  /** Bascule le verrou d'un mur : un drapeau, pas un geste géométrique.
+   *  Le verrou protège la géométrie propre (position, forme), pas les
+   *  opérations d'hébergement (portes/fenêtres restent permises). */
+  basculerVerrouMur(wallId) {
+    const w = this.graph.walls.get(wallId);
+    if (!w) return false;
+    w.verrouille = !w.verrouille;
+    this._onChange();
+    return w.verrouille;
+  }
+
+  /** Le nœud appartient-il à un mur verrouillé ? (déplacements refusés) */
+  _noeudVerrouille(nid) {
+    for (const wid of this.graph.incident(nid)) {
+      if (this.graph.walls.get(wid)?.verrouille) return true;
+    }
+    return false;
+  }
+
+  /** Points d'aimantation pour le déplacement au gizmo : nœuds, milieux,
+   *  intersections et repères intelligents — les mêmes candidats qu'au
+   *  tracé de murs, généralisés au gizmo. */
+  pointsSnap() {
+    const pts = [];
+    for (const n of this.graph.nodes.values()) {
+      if (!n.wallIds.size) continue;
+      pts.push({ x: n.x, y: n.y, type: n.wallIds.size >= 3 ? 'intersection' : 'end' });
+    }
+    for (const w of this.graph.walls.values()) {
+      const f = this.graph.wallFrame(w);
+      pts.push({ x: (f.A.x + f.B.x) / 2, y: (f.A.y + f.B.y) / 2, type: 'mid' });
+    }
+    for (const q of this.reperage.points) pts.push({ x: q.x, y: q.y, type: 'repere' });
+    return pts;
+  }
+
+  /** Applique un geste de gizmo (translation + rotation + échelle autour du
+   *  pivot) aux nœuds d'un mur, depuis leurs positions ORIGINALES mémorisées
+   *  au premier appel du geste — idempotent, jamais cumulatif. */
+  transformerMur(wallId, t) {
+    const w = this.graph.walls.get(wallId);
+    if (!w) return false;
+    if (w.verrouille) return false;
+    if (!this._gesteMur || this._gesteMur.wallId !== wallId) {
+      this._gesteMur = {
+        wallId,
+        a: { x: this.graph.node(w.a).x, y: this.graph.node(w.a).y },
+        b: { x: this.graph.node(w.b).x, y: this.graph.node(w.b).y },
+      };
+    }
+    const { angle = 0, scale: ech = 1, dx = 0, dy = 0, pivot = [0, 0] } = t;
+    const cos = Math.cos(angle), sin = Math.sin(angle);
+    const deplacer = (nid, origine) => {
+      const n = this.graph.nodes.get(nid);
+      if (!n) return;
+      let x = (origine.x - pivot[0]) * ech;
+      let y = (origine.y - pivot[1]) * ech;
+      n.x = x * cos - y * sin + pivot[0] + dx;
+      n.y = x * sin + y * cos + pivot[1] + dy;
+    };
+    deplacer(w.a, this._gesteMur.a);
+    deplacer(w.b, this._gesteMur.b);
+    this._rafraichirApercu();
+    this._reconstruireProxy();
+    this._regenThrottle();   // le 3D suit le geste, régénéré par à-coups
+    return true;
+  }
+
+  /** Fin du geste de gizmo sur un mur : purge la mémoire d'origine et
+   *  régénère le 3D une seule fois. */
+  finGesteMur(wallId) {
+    if (this._gesteMur?.wallId === wallId) this._gesteMur = null;
+    this._regenImmediate();
   }
 
   _supprimerSelection() {
@@ -1927,7 +2008,6 @@ export class Batiment {
   generer3D() {
     this._nettoyer();
     for (const w of this.graph.walls.values()) this._mur(w);
-    for (const pts of this.graph.detectRooms()) this._dalle(pts);
     this._construireSection();
     // les murs 3D deviennent cliquables dans la sélection générale
     /* En plan, ce sont les sections qu'on vise, pas les volumes : vu de
@@ -2060,34 +2140,6 @@ export class Batiment {
     }
   }
 
-  _dalle(pts) {
-    const contour = pts.map(p => new THREE.Vector2(p.x, p.y));
-    const faces = THREE.ShapeUtils.triangulateShape(contour, []);
-    const pos = new Float32Array(faces.length * 9);
-    for (let f = 0; f < faces.length; f++) {
-      for (let k = 0; k < 3; k++) {
-        const p = pts[faces[f][k]];
-        const i = (f * 3 + k) * 3;
-        pos[i] = p.x; pos[i + 1] = p.y; pos[i + 2] = 0;
-      }
-    }
-    const geo = () => {
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-      g.computeVertexNormals();
-      return g;
-    };
-    const sol = new THREE.Mesh(geo(), MATERIAU_SOL);
-    sol.position.z = this.elevation;
-    sol.receiveShadow = true;
-    this.group.add(sol);
-
-    const plafond = new THREE.Mesh(geo(), MATERIAU_PLAFOND);
-    plafond.position.z = this.elevation + this.hauteur;
-    plafond.rotation.x = Math.PI;
-    this.group.add(plafond);
-  }
-
   /* ---- gestion ---- */
   vider() {
     this._nettoyer();
@@ -2130,7 +2182,8 @@ export class Batiment {
       nodes: [...this.graph.nodes.values()].map(n => ({ id: n.id, x: n.x, y: n.y })),
       walls: [...this.graph.walls.values()].map(w => ({
         id: w.id, a: w.a, b: w.b, thickness: w.thickness, height: w.height,
-        elevation: w.elevation, openings: w.openings.map(o => ({ ...o })),
+        elevation: w.elevation, justification: w.justification, verrouille: w.verrouille,
+        openings: w.openings.map(o => ({ ...o })),
       })),
     };
   }
@@ -2144,7 +2197,8 @@ export class Batiment {
     for (const w of data.walls) {
       g.walls.set(w.id, {
         id: w.id, a: w.a, b: w.b, thickness: w.thickness, height: w.height,
-        elevation: w.elevation || 0, openings: (w.openings || []).map(o => ({ ...o })),
+        elevation: w.elevation || 0, justification: w.justification || 'centre',
+        verrouille: !!w.verrouille, openings: (w.openings || []).map(o => ({ ...o })),
       });
       g.nodes.get(w.a)?.wallIds.add(w.id);
       g.nodes.get(w.b)?.wallIds.add(w.id);
