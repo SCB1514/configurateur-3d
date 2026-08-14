@@ -1858,6 +1858,42 @@ export class Batiment {
     return { ok: true };
   }
 
+  /** Copie un mur existant transformé (translation + rotation + échelle
+   *  autour d'un pivot, même convention que `transformerMur`) : nouveaux
+   *  nœuds, nouveau mur, jamais de mutation du mur source. Ne régénère PAS
+   *  le 3D — appelée pour chaque mur d'une copie multiple, la régénération
+   *  est laissée à l'appelant, une seule fois pour tous. */
+  copierMur(wallId, t) {
+    const w = this.graph.walls.get(wallId);
+    if (!w) return null;
+    const { dPos = { x: 0, y: 0 }, dRot = 0, dSca = 1, pivot = [0, 0] } = t || {};
+    const cos = Math.cos(dRot), sin = Math.sin(dRot);
+    const transformer = (n) => {
+      const relX = (n.x - pivot[0]) * dSca, relY = (n.y - pivot[1]) * dSca;
+      return { x: pivot[0] + relX * cos - relY * sin + dPos.x, y: pivot[1] + relX * sin + relY * cos + dPos.y };
+    };
+    const A2 = transformer(this.graph.node(w.a)), B2 = transformer(this.graph.node(w.b));
+    const a = this.graph.addNode(A2.x, A2.y);
+    const b = this.graph.addNode(B2.x, B2.y);
+    const nwid = this.graph.addWall(a, b, {
+      thickness: w.thickness, height: w.height, elevation: w.elevation, justification: w.justification,
+    });
+    if (nwid) this.graph.intersectAndSplit(nwid);
+    this._rafraichirApercu();
+    this._reconstruireProxy();
+    this._onChange();
+    return nwid;
+  }
+
+  /** Angle d'un mur en radians (direction A→B), ou null si absent —
+   *  utilisé par le gizmo pour orienter le pivot sur le mur sélectionné. */
+  angleMur(wallId) {
+    const w = this.graph.walls.get(wallId);
+    if (!w) return null;
+    const f = this.graph.wallFrame(w);
+    return Math.atan2(f.d.y, f.d.x);
+  }
+
   /** Bascule le verrou d'un mur : un drapeau, pas un geste géométrique.
    *  Le verrou protège la géométrie propre (position, forme), pas les
    *  opérations d'hébergement (portes/fenêtres restent permises). */

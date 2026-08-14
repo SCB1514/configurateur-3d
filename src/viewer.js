@@ -174,16 +174,42 @@ export class Viewer {
     this.gizmo = new TransformControls(this.camera, canvas);
     this.gizmo.setSpace('world');
     this.gizmo.setSize(0.85);
+    /* Copie par Alt (Gumball) : taper Alt PENDANT un geste bascule entre
+       « je déplace l'original » et « je place une copie ». `_readTransform`
+       continue de bouger les objets THREE visuellement dans les deux cas —
+       c'est la mutation des DONNÉES réelles (onTransform/onWallGizmo) qui
+       s'arrête en mode copie, pour que l'original ne soit jamais touché. */
+    this._altCopie = false;
     this.gizmo.addEventListener('dragging-changed', e => {
       this.controls.enabled = !e.value;
       if (e.value) {
         this._captureDepart();
+        this._altCopie = false;
       } else {
+        const copieEnCours = this._altCopie;
+        let uidsItems = [], uidsMurs = [], dPos, dRot, dSca, pivot;
+        if (copieEnCours) {
+          dPos = this._pivot.position.clone().sub(this._pivotStart.position);
+          dRot = this._pivot.rotation.z - this._pivotStart.rotation;
+          dSca = (this._pivot.scale.x || 1) / (this._pivotStart.scale || 1);
+          pivot = [this._pivotStart.position.x, this._pivotStart.position.y];
+          for (const [uid, dep] of this._depart) {
+            if (dep.mur) uidsMurs.push(uid); else if (!dep.luminaire) uidsItems.push(uid);
+          }
+        }
         this._depart = null;
         this._pivotStart = null;
         this.clearSnapHints();
         this._cacherMarqueurSnap();
+        if (copieEnCours) {
+          // l'original n'a jamais été muté (onTransform/onWallGizmo étaient
+          // coupés pendant le geste) : rien à restaurer, juste à créer la copie.
+          this.hooks.onGizmoCopy?.(uidsItems, uidsMurs, { dPos, dRot, dSca, pivot });
+          this._altCopie = false;
+        }
         if (this._wallEdit) {
+          // present que le mur d'origine ait ete deplace OU copie : dans les
+          // deux cas `_gesteMur` doit etre purge et le mur source regenere.
           this.hooks.onWallCommit?.(this._wallEdit);
           this._wallEdit = null;
         } else {
@@ -193,6 +219,18 @@ export class Viewer {
     });
     this.gizmo.addEventListener('objectChange', () => this._readTransform());
     this.gizmo.visible = false;
+
+    // Alt tapé PENDANT un geste bascule le mode copie (voir dragging-changed
+    // et _readTransform). Ne réagit que si un geste est en cours
+    // (`this._depart`), pour ne jamais voler le Alt du reste de l'appli.
+    // `e.repeat` filtre l'auto-répétition du système : un Alt maintenu ne
+    // doit basculer qu'une fois, pas à chaque tick clavier.
+    addEventListener('keydown', e => {
+      if (e.key !== 'Alt' || e.repeat || !this._depart) return;
+      e.preventDefault();
+      this._altCopie = !this._altCopie;
+      if (this._altCopie) this._restaurerOriginal();
+    });
 
     // Le plan de saisie du gizmo est un carré de 100 000 unités qu'Eto/Three
     // laisse peindre à 10 % d'opacité : il barre la vue d'une grande forme
@@ -747,6 +785,34 @@ export class Viewer {
     this.marquerOmbres();
   }
 
+  /** Remet les ORIGINAUX à leur état de départ côté données, à l'instant où
+   *  le mode copie s'active. Les frames précédentes de ce même geste ont
+   *  déjà muté `app.state.items`/`batiment.graph` (onTransform/onWallGizmo
+   *  tournaient normalement avant ce tap d'Alt) : sans cette restauration,
+   *  l'original resterait figé où il se trouvait au moment du tap plutôt
+   *  que de revenir à sa vraie position de départ. Delta nul par
+   *  construction — seule la remise à zéro compte, jamais le pivot lui-même
+   *  (qui continue de suivre la souris pour l'aperçu de la copie). */
+  _restaurerOriginal() {
+    if (!this._depart || !this._pivotStart) return;
+    const P = this._pivotStart.position;
+    for (const [uid, dep] of this._depart) {
+      if (dep.mur) {
+        this.hooks.onWallGizmo?.(uid, { dx: 0, dy: 0, angle: 0, scale: 1, pivot: [P.x, P.y] });
+        continue;
+      }
+      if (dep.luminaire) continue;   // jamais mutés en mode copie (voir _readTransform)
+      const autre = this.objects.get(uid);
+      if (!autre) continue;
+      const block = this.lib.block(autre.userData.blockId);
+      this.hooks.onTransform?.(uid, {
+        pos: [r4(dep.position.x), r4(dep.position.y), r4(dep.position.z - (block?.baseOffset || 0))],
+        rot: r4(dep.rotation / DEG),
+        scale: r4(dep.scale || 1),
+      });
+    }
+  }
+
   _readTransform() {
     const obj = this.selected;
     if (!obj || !this._depart || !this._pivotStart) return;
@@ -796,9 +862,16 @@ export class Viewer {
       if (this.tool === 'scale') autre.scale.setScalar((dep.scale || 1) * dSca);
 
       if (dep.luminaire) {
-        this.luminaires?.noterTransformation?.(autre);
+        // les luminaires n'ont pas encore leur pendant « copie » : en mode
+        // Alt, on gele leur notification plutot que de muter un original
+        // dont aucune copie ne sera creee (onGizmoCopy ne les connait pas).
+        if (!this._altCopie) this.luminaires?.noterTransformation?.(autre);
         continue;
       }
+      // en mode copie, l'aperçu visuel suit le geste mais les données
+      // réelles de l'ORIGINAL ne bougent pas — la copie n'existe qu'au
+      // commit, via onGizmoCopy (voir le listener dragging-changed).
+      if (this._altCopie) continue;
       const block = this.lib.block(autre.userData.blockId);
       this.hooks.onTransform?.(uid, {
         pos: [r4(autre.position.x), r4(autre.position.y),
@@ -809,9 +882,10 @@ export class Viewer {
     }
 
     // Murs : le geste entier (translation + rotation + échelle) est reporté
-    // au graphe topologique, qui déplace les nœuds en conséquence.
+    // au graphe topologique, qui déplace les nœuds en conséquence — sauf en
+    // mode copie, où l'original ne doit pas bouger (voir ci-dessus).
     for (const [uid, dep] of this._depart) {
-      if (!dep.mur) continue;
+      if (!dep.mur || this._altCopie) continue;
       this.hooks.onWallGizmo?.(uid, {
         dx: dPos.x, dy: dPos.y, angle: dRot, scale: dSca,
         pivot: [P.x, P.y],
@@ -961,8 +1035,12 @@ export class Viewer {
     this.hooks.onSelect?.(obj ? obj.userData.uid : null, this.selection);
   }
 
-  /** Place le pivot au centre de la bounding box de la sélection, remis à
-   *  zéro en rotation et en échelle. */
+  /** Place le pivot au centre de la bounding box de la sélection. Pour un
+   *  objet SEUL, oriente le gizmo sur son propre axe (Align to Object de
+   *  Rhino) au lieu des axes du monde — un mur tourné ou un item pivoté se
+   *  déplacent alors le long de leur propre longueur, pas de X/Y absolus.
+   *  Une sélection multiple retombe sur les axes du monde : il n'y a pas
+   *  d'orientation unique qui vaille pour plusieurs objets à la fois. */
   _poserPivot() {
     const box = this.boundsOf(this.selection);
     if (box) {
@@ -970,8 +1048,23 @@ export class Viewer {
     } else {
       this._pivot.position.copy(this.selected?.position || new THREE.Vector3());
     }
-    this._pivot.rotation.set(0, 0, 0);
+
+    let angle = 0, local = false;
+    if (this.selection.length === 1 && this.selected) {
+      const obj = this.selected;
+      if (obj.userData.batiment === true) {
+        // un mur n'a pas de rotation propre sur son maillage (extrudé en
+        // coordonnées monde) : son angle vient du graphe, via un hook.
+        const a = this.hooks.wallAngle?.(obj.userData.wallId);
+        if (typeof a === 'number') { angle = a; local = true; }
+      } else {
+        angle = obj.rotation.z;
+        local = true;
+      }
+    }
+    this._pivot.rotation.set(0, 0, local ? angle : 0);
     this._pivot.scale.set(1, 1, 1);
+    this.gizmo.setSpace(local ? 'local' : 'world');
   }
 
   /** Les objets actuellement choisis. */
@@ -1603,7 +1696,19 @@ export class Viewer {
     if (this.tool === 'translate') {
       const i = 'XYZ'.indexOf(axe);
       if (i < 0) return;
-      this._pivot.position.setComponent(i, this._pivot.position.getComponent(i) + valeur);
+      if (this.gizmo.space === 'local' && i < 2) {
+        // Aligné sur l'objet (voir _poserPivot) : les poignées X/Y du
+        // gizmo suivent sa rotation, pas les axes du monde. La saisie
+        // numérique doit avancer dans la MÊME direction que la poignée
+        // cliquée, sinon taper une distance sur la poignée « longueur du
+        // mur » le déplacerait perpendiculairement à ce qu'on vise.
+        const r = this._pivot.rotation.z;
+        const dir = i === 0 ? { x: Math.cos(r), y: Math.sin(r) } : { x: -Math.sin(r), y: Math.cos(r) };
+        this._pivot.position.x += dir.x * valeur;
+        this._pivot.position.y += dir.y * valeur;
+      } else {
+        this._pivot.position.setComponent(i, this._pivot.position.getComponent(i) + valeur);
+      }
     } else if (this.tool === 'rotate') {
       this._pivot.rotation.z += valeur * DEG;
     } else if (this.tool === 'scale') {

@@ -170,6 +170,42 @@ diff, six étaient faux après vérification dans le code.
 
 ## En cours
 
+- **Gumball (Rhino) — deux comportements portés, le reste en réserve** :
+  analysé contre https://docs.mcneel.com (page Gumball complète). FAIT :
+  copie par Alt pendant le geste (translate/rotate/scale, items ET murs —
+  `Viewer._altCopie`/`_restaurerOriginal`, `Batiment.copierMur`,
+  `onGizmoCopy`) ; pivot aligné sur l'objet seul (`Viewer._poserPivot`
+  bascule `gizmo.setSpace('local'|'world')`, angle lu sur `obj.rotation.z`
+  pour un item, sur `Batiment.angleMur()` pour un mur — un mur n'a pas de
+  rotation propre sur son maillage). Conçu avec DeepSeek (`deepseek-v4-pro`,
+  22 325 tokens de sortie, $0,0245, hors quota Anthropic), relu et corrigé
+  ligne à ligne avant intégration — trois défauts trouvés à la relecture :
+  l'échelle d'un item peut être un tableau `[sx,sy,sz]` (voir `resizeAxis`),
+  et `(tableau) * dSca` donne `NaN` sans garde explicite ; les luminaires
+  n'ont pas de pendant « copie » et auraient été mutées en silence sans
+  exclusion explicite ; la saisie numérique au clic (`applyGizmoAxis`)
+  bougeait encore sur les axes du MONDE une fois le pivot passé en espace
+  local, un angle tapé sur la poignée « longueur du mur » serait parti de
+  travers. Les trois corrigés avant vérification.
+  Non repris (réserve pour une prochaine session, hors édition de
+  géométrie qui reste hors sujet) : les poignées de plan/rotation/échelle
+  affichées SIMULTANÉMENT (Rhino ne bascule jamais d'outil, ce projet le
+  fait toujours via la barre d'outils — refonte plus lourde) ; la
+  contrainte de distance/angle tapée PENDANT le glisser (Rhino : taper un
+  nombre puis continuer à glisser, contraint par incréments — différent de
+  la saisie au clic déjà existante) ; double-clic pour reloger le pivot
+  sans bouger l'objet ; le menu du gumball (Reset, Align to CPlane/World,
+  Drag Strength) ; l'échelle non-uniforme par défaut au glisser (Scale1D —
+  le modèle de données le permet déjà pour les items via `resizeAxis`, pas
+  encore pour les murs).
+  Limite pré-existante repérée en relisant, pas introduite ici : en
+  sélection multiple incluant plusieurs murs, seul `_wallEdit` (le dernier
+  mur sélectionné) reçoit `finGesteMur`/régénération dédiée à la fin du
+  geste — les autres gardent un `_gesteMur` mémorisé qui fausserait leur
+  PROCHAIN geste. `_regenThrottle`/`_regenImmediate` régénèrent déjà TOUS
+  les murs à chaque frame donc le rendu reste correct ; seule la mémoire
+  du geste suivant est concernée. À corriger si un vrai geste multi-murs
+  simultané devient un usage courant.
 - **Sélection multiple** : FAIT. Le gizmo s'accroche désormais à un pivot
   invisible posé au centre de la bounding box de la sélection
   (`Viewer._pivot`), jamais à l'objet lui-même — items, murs, ou un mélange

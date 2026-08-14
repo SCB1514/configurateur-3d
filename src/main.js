@@ -102,6 +102,38 @@ async function boot() {
       app.viewer.select(wallId);      // re-sélection sur le nouveau maillage
       pushHistory();
     },
+    // orientation d'un mur pour l'alignement du pivot (Align to Object) —
+    // un mur n'a pas de rotation propre sur son maillage, elle vient du graphe
+    wallAngle: (wallId) => app.batiment.angleMur(wallId),
+    // copie par Alt (Gumball) : l'original n'a jamais bougé côté données
+    // (le viewer a coupé onTransform/onWallGizmo pendant le geste), donc pas
+    // de restauration ici — seulement la création des copies à la pose finale.
+    onGizmoCopy: (uidsItems, uidsMurs, t) => {
+      const cos = Math.cos(t.dRot), sin = Math.sin(t.dRot);
+      for (const uid of uidsItems) {
+        const it = find(uid);
+        if (!it) continue;
+        const relX = it.pos[0] - t.pivot[0], relY = it.pos[1] - t.pivot[1];
+        const rx = relX * cos - relY * sin, ry = relX * sin + relY * cos;
+        // l'échelle peut déjà être un tableau [sx,sy,sz] (redimensionnement
+        // par cote, voir resizeAxis) — un simple `* t.dSca` sur un tableau
+        // donnerait NaN, il faut multiplier chaque composante séparément.
+        const s0 = Array.isArray(it.scale) ? it.scale.map(v => (v || 1) * t.dSca) : (it.scale || 1) * t.dSca;
+        app.state.items.push({
+          ...it,
+          uid: newUid(),
+          pos: [r4(t.pivot[0] + rx * t.dSca + t.dPos.x), r4(t.pivot[1] + ry * t.dSca + t.dPos.y), r4(it.pos[2] + t.dPos.z)],
+          rot: r4((it.rot || 0) + t.dRot * (180 / Math.PI)),
+          scale: s0,
+        });
+        app.viewer.addItem(app.state.items[app.state.items.length - 1]);
+      }
+      for (const wallId of uidsMurs) app.batiment.copierMur(wallId, t);
+      if (uidsMurs.length && !app.batiment.vide) app.batiment.generer3D();
+      // PAS de pushHistory ici : le geste entier (items + murs) se commet
+      // une seule fois, via onCommit/onWallCommit juste après (viewer.js).
+      refreshAll();
+    },
   });
   app.viewer.setEditable(!app.viewonly);
   app.thumbs = new ThumbnailFactory(256);
