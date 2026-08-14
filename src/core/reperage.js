@@ -17,8 +17,10 @@
      1. ACQUISITION — survoler un point d'accrochage sans cliquer,
         le temps d'un battement, le retient comme référence ;
      2. LIGNES — chaque référence émet des rayons dans les
-        directions prévisibles : les deux axes, et la direction des
-        murs qui y aboutissent ;
+        directions prévisibles : la tangente et la perpendiculaire des
+        murs qui y aboutissent. Pas les axes du monde : Rhino ne les
+        émet pas par défaut, et l'avoir vérifié dans ses réglages a
+        évité de reproduire un bruit qu'il a lui-même écarté ;
      3. CROISEMENTS — l'intersection de deux rayons issus de deux
         références différentes est un point candidat.
 
@@ -38,6 +40,54 @@ function croiser(p1, d1, p2, d2) {
   return { x: p1.x + d1.x * t, y: p1.y + d1.y * t };
 }
 
+/**
+ * Intersections apparentes : le point où deux segments SE COUPERAIENT s'ils
+ * étaient prolongés.
+ *
+ * Rhino l'active par défaut (ExtendToApparentIntersection), et en dessin de
+ * plan c'est capital : deux murs qui ne se touchent pas encore ont pourtant
+ * un coin, et c'est ce coin qu'on vise pour les raccorder. Sans lui, il faut
+ * tracer trop long puis ajuster.
+ *
+ * On ne retient que les intersections HORS des segments — celles qui sont
+ * dessus sont déjà trouvées par l'accrochage d'intersection ordinaire.
+ */
+export function intersectionsApparentes(segments, p, tol) {
+  let meilleur = null, meilleureD = tol * 1.4;
+  for (let i = 0; i < segments.length; i++) {
+    for (let j = i + 1; j < segments.length; j++) {
+      const a = segments[i], b = segments[j];
+      const x = croiser(a.o, a.d, b.o, b.d);
+      if (!x) continue;
+
+      const surA = projection(x, a), surB = projection(x, b);
+      if (surA && surB) continue;                 // vraie intersection, pas apparente
+      // trop loin des deux segments : le coin serait invente de toutes pieces
+      if (portee(x, a) > a.len * 2.5 && portee(x, b) > b.len * 2.5) continue;
+
+      const d = Math.hypot(x.x - p.x, x.y - p.y);
+      if (d < meilleureD) {
+        meilleureD = d;
+        meilleur = { x: x.x, y: x.y, type: 'apparente',
+                     lignes: [{ o: a.o, d: a.d }, { o: b.o, d: b.d }] };
+      }
+    }
+  }
+  return meilleur;
+}
+
+/** Le point tombe-t-il dans le segment ? */
+function projection(x, seg) {
+  const t = (x.x - seg.o.x) * seg.d.x + (x.y - seg.o.y) * seg.d.y;
+  return t >= -1e-6 && t <= seg.len + 1e-6;
+}
+
+/** De combien le point deborde-t-il du segment ? */
+function portee(x, seg) {
+  const t = (x.x - seg.o.x) * seg.d.x + (x.y - seg.o.y) * seg.d.y;
+  return t < 0 ? -t : (t > seg.len ? t - seg.len : 0);
+}
+
 /** Distance d'un point à la droite (origine, direction unitaire). */
 function distDroite(p, o, d) {
   return Math.abs((p.x - o.x) * d.y - (p.y - o.y) * d.x);
@@ -45,14 +95,27 @@ function distDroite(p, o, d) {
 
 export class Reperage {
   constructor(options = {}) {
-    /* Les réglages portent les mêmes noms que dans Rhino, et les mêmes
-       valeurs par défaut : qui connaît l'un retrouve l'autre. */
-    this.delai = options.delai ?? 250;        // ms de survol avant acquisition
-    this.maxPoints = options.maxPoints ?? 4;  // au-delà, l'écran devient illisible
-    this.actif = options.actif !== false;
-    this.ortho = true;                        // rayons selon les deux axes
-    this.paralleles = true;                   // rayons selon les murs aboutissant
-    this.croisements = true;                  // intersections entre rayons
+    /* Les valeurs par défaut sont celles relevées dans Rhino lui-même, lues
+       dans SmartTrackSettings plutôt que devinées. Qui connaît l'un retrouve
+       l'autre, et les chiffres ont été éprouvés par des années d'usage. */
+    this.delai = options.delai ?? 300;         // ActivationDelayMilliseconds
+    this.maxPoints = options.maxPoints ?? 8;   // MaxSmartPoints
+    this.actif = options.actif !== false;      // UseSmartTrack
+
+    /* SmartOrtho est FAUX par défaut dans Rhino, et c'est le réglage qui
+       surprend le plus. On croit d'instinct qu'un point de référence doit
+       émettre les deux axes du monde ; Rhino ne le fait pas, parce que ces
+       deux rayons-là partent de PARTOUT dès qu'on a trois références, et que
+       l'écran se remplit de lignes qui ne veulent rien dire.
+
+       Ce qui parle, c'est la géométrie de l'objet survolé : la direction du
+       mur qui aboutit à ce point, et sa perpendiculaire. Un alignement sur
+       le prolongement d'un mur existant est une intention ; un alignement
+       sur l'axe X du monde n'en est une que si le mur est déjà dans cet axe,
+       auquel cas la direction du mur le dit déjà. */
+    this.ortho = options.ortho === true;       // SmartOrtho
+    this.tangentes = options.tangentes !== false;  // SmartTangents
+    this.croisements = true;                   // intersections entre rayons
 
     this.points = [];        // [{ x, y, dirs:[{x,y}], t }]
     this._candidat = null;   // point survolé en attente d'acquisition
@@ -87,8 +150,23 @@ export class Reperage {
     if (this.points.some(q => Math.hypot(q.x - p.x, q.y - p.y) < 1e-6)) return;
 
     const axes = this.ortho ? [{ x: 1, y: 0 }, { x: 0, y: 1 }] : [];
-    const murs = this.paralleles ? dirs.filter(Boolean) : [];
-    this.points.push({ x: p.x, y: p.y, dirs: [...axes, ...murs] });
+
+    /* Tangente ET perpendiculaire, comme SmartTangents.
+       En 2D la tangente d'un mur est sa direction ; sa perpendiculaire est
+       ce qui permet de tomber d'aplomb sur lui depuis ailleurs. Sans elle,
+       la moitié des alignements utiles manque. */
+    const murs = [];
+    for (const d of (this.tangentes ? dirs.filter(Boolean) : [])) {
+      murs.push(d);
+      murs.push({ x: -d.y, y: d.x });
+    }
+
+    // deux rayons colinéaires ne servent qu'à doubler le travail
+    const garde = [];
+    for (const d of [...axes, ...murs]) {
+      if (!garde.some(g => Math.abs(g.x * d.y - g.y * d.x) < 1e-6)) garde.push(d);
+    }
+    this.points.push({ x: p.x, y: p.y, dirs: garde });
     while (this.points.length > this.maxPoints) this.points.shift();
   }
 

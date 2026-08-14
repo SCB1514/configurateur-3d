@@ -1,7 +1,7 @@
 import * as THREE from '../vendor/three/three.module.js';
 import { PlanGraph, add, scale, normalize, perp, cross, dist, sub, dot, lineIntersect } from './core/topologie.js';
 import { snapOsnap, metresParPixel } from './core/osnap.js';
-import { Reperage } from './core/reperage.js';
+import { Reperage, intersectionsApparentes } from './core/reperage.js';
 import { Brush, Evaluator, SUBTRACTION } from '../vendor/three/addons/csg/index.js';
 
 /* ============================================================
@@ -654,6 +654,21 @@ export class Batiment {
                          && this.snaps[os.type])) {
       const r = this.reperage.candidat(p, tol);
       if (r) return r;
+
+      /* Intersection apparente : le coin que DEUX MURS formeraient s'ils
+         etaient prolonges. En dessin de plan c'est capital — deux murs qui
+         ne se touchent pas encore ont pourtant un coin, et c'est lui qu'on
+         vise pour les raccorder. Sans cela il faut tracer trop long, puis
+         ajuster. Rhino l'active par defaut. */
+      if (this.snaps.prolongation) {
+        const segs = [];
+        for (const w of this.graph.walls.values()) {
+          const f = this.graph.wallFrame(w);
+          segs.push({ o: f.A, d: f.d, len: f.len });
+        }
+        const ap = intersectionsApparentes(segs, p, tol);
+        if (ap) return ap;
+      }
     }
 
     // 0. fermeture à angle droit : en pointant le point de départ, on propose le
@@ -902,6 +917,7 @@ export class Batiment {
     tracer('grille', (ctx, m, s) => { ctx.beginPath(); ctx.arc(m, m, s * 0.7, 0, 2 * Math.PI); ctx.stroke(); });
     // reperage : un chevron pour l'alignement, une etoile pour le croisement
     tracer('alignement', (ctx, m, s) => { ctx.beginPath(); ctx.moveTo(m - s, m - s * 0.5); ctx.lineTo(m, m); ctx.lineTo(m - s, m + s * 0.5); ctx.stroke(); });
+    tracer('apparente', (ctx, m, s) => { ctx.beginPath(); ctx.moveTo(m - s, m - s); ctx.lineTo(m + s, m + s); ctx.moveTo(m + s, m - s); ctx.lineTo(m - s, m + s); ctx.stroke(); ctx.beginPath(); ctx.setLineDash([6, 5]); ctx.moveTo(m - s * 1.5, m); ctx.lineTo(m + s * 1.5, m); ctx.stroke(); ctx.setLineDash([]); });
     tracer('croisement', (ctx, m, s) => { ctx.beginPath(); ctx.moveTo(m - s, m); ctx.lineTo(m + s, m); ctx.moveTo(m, m - s); ctx.lineTo(m, m + s); ctx.moveTo(m - s * 0.7, m - s * 0.7); ctx.lineTo(m + s * 0.7, m + s * 0.7); ctx.moveTo(m + s * 0.7, m - s * 0.7); ctx.lineTo(m - s * 0.7, m + s * 0.7); ctx.stroke(); });
 
     this._guideLigne = new THREE.Line(new THREE.BufferGeometry(),
@@ -940,7 +956,7 @@ export class Batiment {
        candidat, tracee de part et d'autre de sa reference. C'est cette
        ligne qui explique le point propose — sans elle, le curseur
        s'accroche a un endroit dont rien ne dit pourquoi. */
-    if (s.type === 'alignement' || s.type === 'croisement') {
+    if (s.type === 'alignement' || s.type === 'croisement' || s.type === 'apparente') {
       const pts = [];
       for (const seg of Reperage.segments(s, this.viewer.gridStep * 200 || 60)) {
         pts.push(new THREE.Vector3(seg.a.x, seg.a.y, 0.04),
