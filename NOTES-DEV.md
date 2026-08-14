@@ -139,8 +139,15 @@ diff, six étaient faux après vérification dans le code.
 - **Sélection multiple** : le moteur a `_selection` avec gestion du Maj, mais
   un gizmo commun à plusieurs objets n'est pas vérifié.
 - **Rectangle de capture** : absent, et c'est le geste le plus attendu en plan.
-- **Repérage** : acquisition manuelle au Ctrl, tangentes et perpendiculaires,
-  réglages exposés au panneau (ils existent dans le module).
+- **Repérage** : acquisition manuelle au Ctrl, perpendiculaires, réglages
+  exposés au panneau (ils existent dans le module). Les tangentes sont
+  faites — et elles ont demandé une exception à la règle de priorité :
+  un cercle est polygonisé en vingt-quatre murs, dont les sommets et les
+  milieux sont des points « réels » pour le graphe mais des artefacts pour
+  l'utilisateur. Le milieu d'un segment tombe à quatre centimètres du vrai
+  contact. La tangente passe donc AVANT les accrochages de points, à
+  tolérance réduite de moitié pour que l'exception ne déborde pas. Le cercle
+  idéal est retenu dans `batiment.cercles`, hors du graphe qui l'oublie.
 - **Interface** : trois panneaux flottants qui se recouvrent. Les réunir en un
   panneau à onglets à droite.
 - **Ambiance « Intérieur »** : les quatre existantes éclairent comme un studio

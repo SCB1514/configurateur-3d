@@ -88,6 +88,51 @@ function portee(x, seg) {
   return t < 0 ? -t : (t > seg.len ? t - seg.len : 0);
 }
 
+/**
+ * Tangentes menées d'un point à un cercle.
+ *
+ * C'est le seul cas, en dessin de plan, où la tangence demande autre chose
+ * qu'une direction recopiée : depuis un point extérieur, un cercle admet
+ * DEUX tangentes, et leurs points de contact ne se devinent pas à l'œil.
+ * Les tracer à la main suppose une construction — le cercle de Thalès sur
+ * le segment centre-point — que personne n'a envie de refaire à chaque
+ * raccordement.
+ *
+ * Nos cercles sont polygonisés en segments : la tangence porte donc sur le
+ * cercle IDÉAL, celui que l'utilisateur a dessiné et qu'il a toujours en
+ * tête, pas sur le polygone qui l'approche. C'est le bon choix — s'accrocher
+ * au sommet le plus proche du polygone donnerait un point juste à côté de
+ * celui qu'on vise, et le décalage se verrait au raccord.
+ *
+ * Renvoie les points de contact, du plus proche du curseur au plus loin.
+ */
+export function tangentesVersCercle(depuis, cercle, p, tol) {
+  const vx = cercle.cx - depuis.x, vy = cercle.cy - depuis.y;
+  const d = Math.hypot(vx, vy);
+  if (d <= cercle.r + 1e-9) return null;        // le point est dedans : pas de tangente
+
+  /* Construction classique : le point de contact voit le segment
+     centre-point sous un angle droit. L'angle entre (depuis→centre) et
+     (depuis→contact) vaut donc arccos(r / d)... exprimé ici depuis le
+     centre, ce qui évite un changement de repère. */
+  const base = Math.atan2(-vy, -vx);            // du centre vers le point
+  const ecart = Math.acos(cercle.r / d);
+
+  const contacts = [1, -1].map(signe => {
+    const a = base + signe * ecart;
+    return { x: cercle.cx + cercle.r * Math.cos(a), y: cercle.cy + cercle.r * Math.sin(a) };
+  });
+
+  contacts.sort((u, w) => Math.hypot(u.x - p.x, u.y - p.y) - Math.hypot(w.x - p.x, w.y - p.y));
+  const proche = contacts[0];
+  if (Math.hypot(proche.x - p.x, proche.y - p.y) > tol) return null;
+
+  const dir = { x: proche.x - depuis.x, y: proche.y - depuis.y };
+  const n = Math.hypot(dir.x, dir.y) || 1;
+  return { x: proche.x, y: proche.y, type: 'tangente',
+           lignes: [{ o: { ...depuis }, d: { x: dir.x / n, y: dir.y / n } }] };
+}
+
 /** Distance d'un point à la droite (origine, direction unitaire). */
 function distDroite(p, o, d) {
   return Math.abs((p.x - o.x) * d.y - (p.y - o.y) * d.x);

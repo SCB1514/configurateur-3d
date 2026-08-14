@@ -1,7 +1,7 @@
 import * as THREE from '../vendor/three/three.module.js';
 import { PlanGraph, add, scale, normalize, perp, cross, dist, sub, dot, lineIntersect } from './core/topologie.js';
 import { snapOsnap, metresParPixel } from './core/osnap.js';
-import { Reperage, intersectionsApparentes } from './core/reperage.js';
+import { Reperage, intersectionsApparentes, tangentesVersCercle } from './core/reperage.js';
 import { Brush, Evaluator, SUBTRACTION } from '../vendor/three/addons/csg/index.js';
 
 /* ============================================================
@@ -489,6 +489,14 @@ export class Batiment {
     /* Le reperage intelligent : il repond a « a quoi suis-je aligne ? »,
        la question que les accrochages ne posent pas. Voir core/reperage.js. */
     this.reperage = new Reperage();
+    /* Les cercles traces, retenus sous leur forme IDEALE.
+
+       Le graphe ne connait que des segments : un cercle y devient
+       vingt-quatre murs et son centre disparait. Or c'est le cercle que
+       l'utilisateur a en tete, et c'est de lui qu'il veut la tangente. On
+       garde donc le couple centre-rayon a cote du graphe, sans quoi
+       l'information est perdue a la seconde ou le trait est pose. */
+    this.cercles = [];
     this._initMarqueursSnap();
 
     this._ancre = null;
@@ -668,6 +676,26 @@ export class Batiment {
         }
         const ap = intersectionsApparentes(segs, p, tol);
         if (ap) return ap;
+      }
+    }
+
+    /* La tangente passe AVANT les points reels, et c'est la seule exception
+       a la regle « un point qui existe l'emporte sur un point deduit ».
+
+       Un cercle est polygonise en vingt-quatre segments : ses sommets et ses
+       milieux sont des points reels au sens du graphe, mais ce sont des
+       artefacts de discretisation, pas des points voulus. Le milieu d'un
+       segment tombe a quatre centimetres du vrai point de tangence — assez
+       pour que le raccord se voie. On donne donc la priorite au cercle
+       IDEAL, celui qui a ete dessine.
+
+       La tolerance est resserree de moitie pour que l'exception ne deborde
+       pas ailleurs, et la tangente n'a de sens qu'avec un point de depart. */
+    if (this.guides && this.reperage.tangentes && this._ancre && this.cercles.length) {
+      const depuis = this.graph.node(this._ancre);
+      for (const cercle of this.cercles) {
+        const t = tangentesVersCercle(depuis, cercle, p, tol * 0.5);
+        if (t) return t;
       }
     }
 
@@ -917,6 +945,7 @@ export class Batiment {
     tracer('grille', (ctx, m, s) => { ctx.beginPath(); ctx.arc(m, m, s * 0.7, 0, 2 * Math.PI); ctx.stroke(); });
     // reperage : un chevron pour l'alignement, une etoile pour le croisement
     tracer('alignement', (ctx, m, s) => { ctx.beginPath(); ctx.moveTo(m - s, m - s * 0.5); ctx.lineTo(m, m); ctx.lineTo(m - s, m + s * 0.5); ctx.stroke(); });
+    tracer('tangente', (ctx, m, s) => { ctx.beginPath(); ctx.arc(m, m + s * 0.4, s * 0.6, 0, 2 * Math.PI); ctx.stroke(); ctx.beginPath(); ctx.moveTo(m - s, m - s * 0.2); ctx.lineTo(m + s, m - s * 0.2); ctx.stroke(); });
     tracer('apparente', (ctx, m, s) => { ctx.beginPath(); ctx.moveTo(m - s, m - s); ctx.lineTo(m + s, m + s); ctx.moveTo(m + s, m - s); ctx.lineTo(m - s, m + s); ctx.stroke(); ctx.beginPath(); ctx.setLineDash([6, 5]); ctx.moveTo(m - s * 1.5, m); ctx.lineTo(m + s * 1.5, m); ctx.stroke(); ctx.setLineDash([]); });
     tracer('croisement', (ctx, m, s) => { ctx.beginPath(); ctx.moveTo(m - s, m); ctx.lineTo(m + s, m); ctx.moveTo(m, m - s); ctx.lineTo(m, m + s); ctx.moveTo(m - s * 0.7, m - s * 0.7); ctx.lineTo(m + s * 0.7, m + s * 0.7); ctx.moveTo(m + s * 0.7, m - s * 0.7); ctx.lineTo(m - s * 0.7, m + s * 0.7); ctx.stroke(); });
 
@@ -956,7 +985,8 @@ export class Batiment {
        candidat, tracee de part et d'autre de sa reference. C'est cette
        ligne qui explique le point propose — sans elle, le curseur
        s'accroche a un endroit dont rien ne dit pourquoi. */
-    if (s.type === 'alignement' || s.type === 'croisement' || s.type === 'apparente') {
+    if (s.type === 'alignement' || s.type === 'croisement'
+        || s.type === 'apparente' || s.type === 'tangente') {
       const pts = [];
       for (const seg of Reperage.segments(s, this.viewer.gridStep * 200 || 60)) {
         pts.push(new THREE.Vector3(seg.a.x, seg.a.y, 0.04),
@@ -1081,6 +1111,7 @@ export class Batiment {
 
   _genererCercle(c, r) {
     if (!(r > 0.05)) return;
+    this.cercles.push({ cx: c.x, cy: c.y, r });
     const N = 24;
     const opts = { thickness: this.epaisseur, height: this.hauteur, elevation: this.elevation };
     const ids = [];
