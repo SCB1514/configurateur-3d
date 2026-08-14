@@ -180,11 +180,22 @@ export class Viewer {
        c'est la mutation des DONNÉES réelles (onTransform/onWallGizmo) qui
        s'arrête en mode copie, pour que l'original ne soit jamais touché. */
     this._altCopie = false;
+    // Contrainte numérique tapée PENDANT le geste (Gumball) : this._clicAxe
+    // (capturé au pointerdown, voir _onDown) dit sur quelle poignée le
+    // geste a démarré ; this._dernierPointeur suit le curseur pour placer
+    // la bulle d'affichage.
+    this._contrainteBuffer = null;
+    this._contrainteValeur = null;
+    this._dernierPointeur = null;
+    this._contrainteHint = null;
     this.gizmo.addEventListener('dragging-changed', e => {
       this.controls.enabled = !e.value;
       if (e.value) {
         this._captureDepart();
         this._altCopie = false;
+        this._contrainteBuffer = null;
+        this._contrainteValeur = null;
+        this._cacherIndicateurContrainte();
       } else {
         const copieEnCours = this._altCopie;
         let uidsItems = [], uidsMurs = [], dPos, dRot, dSca, pivot;
@@ -193,12 +204,33 @@ export class Viewer {
           dRot = this._pivot.rotation.z - this._pivotStart.rotation;
           dSca = (this._pivot.scale.x || 1) / (this._pivotStart.scale || 1);
           pivot = [this._pivotStart.position.x, this._pivotStart.position.y];
+          // Si une contrainte numérique était active, la copie doit refléter
+          // la MÊME valeur arrondie que l'aperçu déjà montré pendant le
+          // geste (voir _readTransform) — sans quoi la copie créée ne
+          // correspondrait pas à ce que l'utilisateur a vu se dessiner.
+          if (this.tool === 'rotate' && this._contrainteValeur !== null) {
+            const dRotDeg = dRot * 180 / Math.PI;
+            dRot = Math.round(dRotDeg / this._contrainteValeur) * this._contrainteValeur * Math.PI / 180;
+          }
+          if (this.tool === 'translate' && this._contrainteValeur !== null && /^[XYZ]$/.test(this._clicAxe ?? '')) {
+            const local = this.gizmo.space === 'local';
+            const r = this._pivot.rotation.z;
+            const dir = this._clicAxe === 'X' ? (local ? { x: Math.cos(r), y: Math.sin(r), z: 0 } : { x: 1, y: 0, z: 0 })
+              : this._clicAxe === 'Y' ? (local ? { x: -Math.sin(r), y: Math.cos(r), z: 0 } : { x: 0, y: 1, z: 0 })
+              : { x: 0, y: 0, z: 1 };
+            const d = dPos.x * dir.x + dPos.y * dir.y + dPos.z * dir.z;
+            const dContraint = Math.round(d / this._contrainteValeur) * this._contrainteValeur;
+            dPos.set(dir.x * dContraint, dir.y * dContraint, dir.z * dContraint);
+          }
           for (const [uid, dep] of this._depart) {
             if (dep.mur) uidsMurs.push(uid); else if (!dep.luminaire) uidsItems.push(uid);
           }
         }
         this._depart = null;
         this._pivotStart = null;
+        this._contrainteBuffer = null;
+        this._contrainteValeur = null;
+        this._cacherIndicateurContrainte();
         this.clearSnapHints();
         this._cacherMarqueurSnap();
         if (copieEnCours) {
@@ -230,6 +262,67 @@ export class Viewer {
       e.preventDefault();
       this._altCopie = !this._altCopie;
       if (this._altCopie) this._restaurerOriginal();
+    });
+
+    /* Contrainte numérique tapée PENDANT le geste (Gumball) : « glisser,
+       taper un nombre, Entrée, continuer à glisser » — contraint la suite
+       du geste à des multiples de ce nombre, sans lâcher la souris.
+       Différent de la saisie au clic (`applyGizmoAxis`/`onGizmoValue`) qui
+       se déclenche APRÈS la fin d'un geste, sur un clic franc.
+
+       Piège évité ici : `main.js` porte déjà un écouteur clavier GLOBAL où
+       Échap désélectionne et Retour arrière SUPPRIME l'objet sélectionné.
+       Sans `stopPropagation()`, corriger une frappe (Retour arrière) ou
+       annuler une saisie en cours (Échap) pendant un geste de gizmo
+       aurait aussi déclenché ce raccourci global — la coquille
+       supprimerait l'objet qu'on est justement en train de manipuler. Cet
+       écouteur est posé dans le CONSTRUCTEUR du Viewer, donc avant
+       `wireUI()` (appelé plus tard dans `boot()`) : `stopPropagation()`
+       empêche bien l'écouteur de main.js, enregistré après, de recevoir
+       l'événement. */
+    addEventListener('keydown', e => {
+      if (!this._depart || (this.tool !== 'translate' && this.tool !== 'rotate')) return;
+      if (e.repeat) return;
+
+      const chiffreOuSigne = (e.key.length === 1 && /[0-9.]/.test(e.key)) || e.key === '-';
+      if (chiffreOuSigne) {
+        if (this._contrainteBuffer === null) this._contrainteBuffer = '';
+        this._contrainteBuffer += e.key;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        this._majIndicateurContrainte();
+        return;
+      }
+      if (e.key === 'Backspace') {
+        if (this._contrainteBuffer === null) return;   // rien à corriger : laisser Suppr faire son travail habituel
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        this._contrainteBuffer = this._contrainteBuffer.slice(0, -1);
+        if (this._contrainteBuffer === '') { this._contrainteBuffer = null; this._cacherIndicateurContrainte(); }
+        else this._majIndicateurContrainte();
+        return;
+      }
+      if (e.key === 'Enter') {
+        if (this._contrainteBuffer === null) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const n = Number(this._contrainteBuffer);
+        if (!Number.isNaN(n) && n !== 0) this._contrainteValeur = Math.abs(n);
+        this._contrainteBuffer = null;
+        this._cacherIndicateurContrainte();
+        return;
+      }
+      if (e.key === 'Escape' && this._contrainteBuffer !== null) {
+        // Échap annule la frappe en cours, pas une contrainte déjà validée
+        // par un Entrée précédent — celle-ci reste active pour le reste du
+        // geste. Ne consomme l'événement QUE s'il y avait une frappe à
+        // annuler : un Échap sans rien à effacer doit continuer vers
+        // main.js pour désélectionner comme d'habitude.
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        this._contrainteBuffer = null;
+        this._cacherIndicateurContrainte();
+      }
     });
 
     // Le plan de saisie du gizmo est un carré de 100 000 unités qu'Eto/Three
@@ -774,6 +867,35 @@ export class Viewer {
     if (this._pointsDirty) { this.refreshPoints(); this._pointsDirty = false; }
   }
 
+  /** Affiche/met à jour la bulle flottante de contrainte numérique (les
+   *  chiffres tapés pendant le geste), au-dessus du curseur. Un `<div>`, pas
+   *  un `<input>` : voler le focus au canvas couperait la capture de
+   *  pointeur que TransformControls tient depuis le pointerdown. */
+  _majIndicateurContrainte() {
+    if (this._contrainteBuffer === null) { this._cacherIndicateurContrainte(); return; }
+    if (!this._contrainteHint) {
+      const el = document.createElement('div');
+      Object.assign(el.style, {
+        position: 'fixed', pointerEvents: 'none', zIndex: '9999',
+        background: 'rgba(20,20,20,.88)', color: '#f5f5f5',
+        padding: '4px 8px', borderRadius: '6px', fontSize: '13px',
+        fontFamily: 'inherit', whiteSpace: 'nowrap', transform: 'translate(-50%, -130%)',
+      });
+      document.body.appendChild(el);
+      this._contrainteHint = el;
+    }
+    this._contrainteHint.textContent = this._contrainteBuffer + (this.tool === 'rotate' ? '°' : ' m');
+    if (this._dernierPointeur) {
+      this._contrainteHint.style.left = this._dernierPointeur.x + 'px';
+      this._contrainteHint.style.top = this._dernierPointeur.y + 'px';
+    }
+    this._contrainteHint.style.display = 'block';
+  }
+
+  _cacherIndicateurContrainte() {
+    if (this._contrainteHint) this._contrainteHint.style.display = 'none';
+  }
+
   _applyTransform(obj, item, block) {
     obj.position.set(item.pos[0], item.pos[1], item.pos[2] + (block?.baseOffset || 0));
     obj.rotation.set(0, 0, (item.rot || 0) * DEG);
@@ -841,8 +963,34 @@ export class Viewer {
       dPos = this._snapGizmo(dPos);
     }
 
+    // Contrainte numérique tapée pendant le geste (voir le listener clavier
+    // du constructeur) : arrondit la ROTATION aux multiples demandés — le
+    // pivot lui-même continue de suivre la souris sans à-coups, seul ce
+    // qui est appliqué aux objets ci-dessous est arrondi.
+    let dRotEffectif = dRot;
+    if (this.tool === 'rotate' && this._contrainteValeur !== null) {
+      const dRotDeg = dRot * 180 / Math.PI;
+      dRotEffectif = Math.round(dRotDeg / this._contrainteValeur) * this._contrainteValeur * Math.PI / 180;
+    }
+
+    // Contrainte numérique pendant la TRANSLATION : seulement si le geste a
+    // démarré sur une poignée d'axe simple (X/Y/Z, capturée dans
+    // `_clicAxe` — une poignée de plan ou l'origine libre n'a pas d'axe
+    // unique à contraindre). Passe APRÈS l'aimantation : la frappe clavier,
+    // explicite, a le dernier mot sur un magnétisme automatique.
+    if (this.tool === 'translate' && this._contrainteValeur !== null && /^[XYZ]$/.test(this._clicAxe ?? '')) {
+      const local = this.gizmo.space === 'local';
+      const r = this._pivot.rotation.z;
+      const dir = this._clicAxe === 'X' ? (local ? { x: Math.cos(r), y: Math.sin(r), z: 0 } : { x: 1, y: 0, z: 0 })
+        : this._clicAxe === 'Y' ? (local ? { x: -Math.sin(r), y: Math.cos(r), z: 0 } : { x: 0, y: 1, z: 0 })
+        : { x: 0, y: 0, z: 1 };   // Z reste vertical dans les deux espaces (projet en plan)
+      const d = dPos.x * dir.x + dPos.y * dir.y + dPos.z * dir.z;
+      const dContraint = Math.round(d / this._contrainteValeur) * this._contrainteValeur;
+      dPos.set(dir.x * dContraint, dir.y * dContraint, dir.z * dContraint);
+    }
+
     const P = this._pivotStart.position;   // centre du geste (rotation/échelle)
-    const cos = Math.cos(dRot), sin = Math.sin(dRot);
+    const cos = Math.cos(dRotEffectif), sin = Math.sin(dRotEffectif);
 
     for (const [uid, dep] of this._depart) {
       if (dep.mur) continue;
@@ -858,7 +1006,7 @@ export class Viewer {
         P.y + ry * dSca + dPos.y,
         dep.position.z + dPos.z
       );
-      autre.rotation.z = dep.rotation + dRot;
+      autre.rotation.z = dep.rotation + dRotEffectif;
       if (this.tool === 'scale') autre.scale.setScalar((dep.scale || 1) * dSca);
 
       if (dep.luminaire) {
@@ -887,7 +1035,7 @@ export class Viewer {
     for (const [uid, dep] of this._depart) {
       if (!dep.mur || this._altCopie) continue;
       this.hooks.onWallGizmo?.(uid, {
-        dx: dPos.x, dy: dPos.y, angle: dRot, scale: dSca,
+        dx: dPos.x, dy: dPos.y, angle: dRotEffectif, scale: dSca,
         pivot: [P.x, P.y],
       });
     }
@@ -1526,6 +1674,9 @@ export class Viewer {
   }
 
   _onMove(ev) {
+    // position du curseur pour la bulle de contrainte numérique (voir constructeur)
+    this._dernierPointeur = { x: ev.clientX, y: ev.clientY };
+    if (this._contrainteBuffer !== null) this._majIndicateurContrainte();
     if (this._beam) {
       this._setPointer(ev);
       this.luminaires?.editerFaisceau(this._beam.g, this._beam.type, this.pointer, this.camera);

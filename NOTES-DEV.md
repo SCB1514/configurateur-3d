@@ -187,16 +187,32 @@ diff, six étaient faux après vérification dans le code.
   bougeait encore sur les axes du MONDE une fois le pivot passé en espace
   local, un angle tapé sur la poignée « longueur du mur » serait parti de
   travers. Les trois corrigés avant vérification.
-  Non repris (réserve pour une prochaine session, hors édition de
-  géométrie qui reste hors sujet) : les poignées de plan/rotation/échelle
-  affichées SIMULTANÉMENT (Rhino ne bascule jamais d'outil, ce projet le
-  fait toujours via la barre d'outils — refonte plus lourde) ; la
-  contrainte de distance/angle tapée PENDANT le glisser (Rhino : taper un
-  nombre puis continuer à glisser, contraint par incréments — différent de
-  la saisie au clic déjà existante) ; double-clic pour reloger le pivot
-  sans bouger l'objet ; le menu du gumball (Reset, Align to CPlane/World,
-  Drag Strength) ; l'échelle non-uniforme par défaut au glisser (Scale1D —
-  le modèle de données le permet déjà pour les items via `resizeAxis`, pas
+  Contrainte de distance/angle tapée PENDANT le glisser : FAIT dans une
+  seconde passe (DeepSeek, deepseek-v4-pro, 18 076 tokens de sortie,
+  $0,0181). Glisser une poignée d'axe simple, taper un nombre, Entrée SANS
+  lâcher la souris, continuer à glisser : la suite du geste se contraint
+  aux multiples de ce nombre (distance le long de l'axe pour translate,
+  degrés pour rotate — pas pour scale, absent de la doc Rhino sur ce
+  point). Bulle flottante qui suit le curseur pendant la frappe
+  (`_majIndicateurContrainte`/`_cacherIndicateurContrainte`).
+  Défaut trouvé et corrigé avant vérification, plus grave que les trois
+  précédents : `main.js` porte un écouteur clavier global où Retour
+  arrière SUPPRIME l'objet sélectionné et Échap désélectionne. Le premier
+  jet utilisait `e.stopPropagation()` pour empêcher ce doublon — TESTÉ,
+  et le mur a bel et bien été supprimé pendant qu'on corrigeait une
+  frappe. `stopPropagation()` n'arrête que la PROPAGATION vers d'autres
+  éléments, pas les autres écouteurs du MÊME élément (`window` ici, les
+  deux écouteurs y sont posés) : il fallait `stopImmediatePropagation()`.
+  Reproduit puis corrigé, avec la vérification inverse (Échap SANS frappe
+  en cours continue de désélectionner normalement, pour ne pas avaler un
+  raccourci qui ne le concernait pas).
+  Non repris (réserve, hors édition de géométrie qui reste hors sujet) :
+  les poignées de plan/rotation/échelle affichées SIMULTANÉMENT (Rhino ne
+  bascule jamais d'outil, ce projet le fait toujours via la barre
+  d'outils — refonte plus lourde) ; double-clic pour reloger le pivot sans
+  bouger l'objet ; le menu du gumball (Reset, Align to CPlane/World, Drag
+  Strength) ; l'échelle non-uniforme par défaut au glisser (Scale1D — le
+  modèle de données le permet déjà pour les items via `resizeAxis`, pas
   encore pour les murs).
   Limite pré-existante repérée en relisant, pas introduite ici : en
   sélection multiple incluant plusieurs murs, seul `_wallEdit` (le dernier
