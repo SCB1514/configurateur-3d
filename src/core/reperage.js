@@ -260,9 +260,16 @@ export class Reperage {
       for (const d of q.dirs) {
         const dd = distDroite(p, q, d);
         if (dd >= meilleureD) continue;
-        // projection orthogonale du curseur sur le rayon
+        /* Projection orthogonale du curseur sur le rayon.
+
+           Le signe de t ne compte pas : un guide est une DROITE, pas une
+           demi-droite. On rejetait autrefois ce qui tombait « derriere » la
+           reference, alors que `segments()` tracait la ligne de part et
+           d'autre et que `croiser()` calculait deja les croisements sans
+           cette contrainte. Le guide se voyait donc sous un milieu sans
+           qu'on puisse s'y accrocher, et le module se contredisait
+           lui-meme. Rhino accroche des deux cotes. */
         const t = (p.x - q.x) * d.x + (p.y - q.y) * d.y;
-        if (t < EPS) continue;                     // derrière la référence
         meilleureD = dd;
         meilleur = { x: q.x + d.x * t, y: q.y + d.y * t, type: 'alignement',
                      lignes: [{ o: q, d }] };

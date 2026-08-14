@@ -654,9 +654,25 @@ export class Batiment {
     this.reperage.actif = !!this.guides;
     if (os && ['end', 'mid', 'intersection'].includes(os.type)) {
       const dirs = [];
-      for (const w of this.graph.walls.values()) {
-        const A = this.graph.node(w.a), B = this.graph.node(w.b);
-        if (dist(os, A) < 1e-6 || dist(os, B) < 1e-6) dirs.push(this.graph.wallFrame(w).d);
+      if (os.type === 'mid' && os.wallId) {
+        /* Le milieu tient sa direction de SON mur, pas du voisinage.
+
+           Un milieu n'est l'extremite d'aucun mur : la recherche par
+           extremites ci-dessous ne trouvait donc rien, et le point acquis
+           n'emettait aucun rayon — survoler un milieu ne donnait aucun
+           guide. Or c'est de tous les reperes celui dont la direction est
+           la moins ambigue : le segment qui le porte.
+
+           On donne la direction du mur, et `acquerir` en tire d'office la
+           perpendiculaire. C'est elle qu'on attend d'un milieu — la mediane
+           qui part d'aplomb du segment, celle de SmartTrack. */
+        const w = this.graph.walls.get(os.wallId);
+        if (w) dirs.push(this.graph.wallFrame(w).d);
+      } else {
+        for (const w of this.graph.walls.values()) {
+          const A = this.graph.node(w.a), B = this.graph.node(w.b);
+          if (dist(os, A) < 1e-6 || dist(os, B) < 1e-6) dirs.push(this.graph.wallFrame(w).d);
+        }
       }
       this.reperage.survol(os, dirs);
     } else {

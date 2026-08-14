@@ -148,6 +148,10 @@ diff, six étaient faux après vérification dans le code.
   contact. La tangente passe donc AVANT les accrochages de points, à
   tolérance réduite de moitié pour que l'exception ne déborde pas. Le cercle
   idéal est retenu dans `batiment.cercles`, hors du graphe qui l'oublie.
+  Le survol d'un milieu émet maintenant sa propre direction (celle du mur
+  qui le porte) : la médiane perpendiculaire s'obtient des DEUX côtés du
+  segment, pas seulement du côté visé la première fois — un rayon de
+  repérage est une droite, pas une demi-droite.
 - **Interface** : trois panneaux flottants qui se recouvrent. Les réunir en un
   panneau à onglets à droite.
 - **Ambiance « Intérieur »** : les quatre existantes éclairent comme un studio
