@@ -281,14 +281,33 @@ diff, six étaient faux après vérification dans le code.
   moindre chevauchement sur le MÊME rectangle réduit ; Maj/Ctrl testés
   dans les deux sens ; `enableRotate` gelé puis restauré à sa valeur
   d'origine en mode plan ET en 3D.
-  Non repris (réserve, portée volontairement restreinte aux items de
-  bibliothèque pour garder cette passe vérifiable) : les murs/nœuds du
-  bâtiment ont leur PROPRE sélection (`Batiment._selection`,
-  `_selectionFenetre` déjà existante mais sans distinction fenêtre/
-  recoupement, Maj en simple bascule) — même retrofit à leur appliquer
-  dans une prochaine session. Le menu de désambiguïsation (clic sur des
-  objets proches/superposés, Rhino ouvre une liste) et les commandes de
-  sélection par nom/calque/couleur ne sont pas non plus repris.
+  Murs/nœuds du bâtiment : FAIT dans une seconde passe, le même jour
+  (`Batiment`, DeepSeek deepseek-v4-pro, $0,0167). Plus simple que côté
+  items : l'édition de plan force déjà une caméra orthographique sans
+  rotation (`_entrerPlan`), donc pas de conflit OrbitControls à gérer ici,
+  et `_selectionFenetre` travaillait déjà en coordonnées MONDE 2D — pas de
+  projection écran à ajouter. Fenêtre (glissé à droite) : mur retenu si
+  ses deux nœuds sont dans le rectangle, inchangé. Recoupement (glissé à
+  gauche) : un nœud dedans suffit, OU le segment du mur traverse un bord
+  du rectangle (`segmentIntersect`, déjà écrit dans `core/topologie.js`
+  pour une autre fonction, jamais importé ici avant). Même Maj=ajoute/
+  Ctrl=retire qu'aux items, via une nouvelle `_appliquerSelection()`
+  partagée par les trois points de bascule qui dupliquaient chacun la
+  même logique. Aperçu visuel : trait plein/pointillé comme Rhino, un
+  `THREE.LineDashedMaterial` en plus de l'existant `LineBasicMaterial`.
+  Défaut trouvé à l'intégration, invisible pour DeepSeek (pas dans
+  l'extrait fourni) : `_retirerApercu()` — appelée à CHAQUE fin de geste
+  — détruit le matériau du `LineLoop` (`material?.dispose?.()`). Le
+  premier jet mettait les deux matériaux plein/pointillé en cache de
+  façon persistante (créés une fois, réutilisés indéfiniment) : dès le
+  DEUXIÈME geste, l'un des deux aurait été réassigné après sa propre
+  destruction. Corrigé en les recréant avec le `LineLoop` lui-même à
+  chaque fois qu'il repart de zéro — testé sur trois gestes consécutifs
+  (plein, pointillé, plein) avec un objet matériau valide et distinct à
+  chaque fois, pas seulement supposé correct.
+  Non repris (réserve) : le menu de désambiguïsation (clic sur des objets
+  proches/superposés, Rhino ouvre une liste) et les commandes de
+  sélection par nom/calque/couleur, pour aucun des deux domaines.
 - **Repérage** : perpendiculaires et réglages exposés au panneau restent à
   faire (ils existent dans le module). Tangentes, milieu-comme-référence et
   acquisition manuelle sont faits. Les tangentes ont demandé une exception à

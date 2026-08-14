@@ -1,5 +1,5 @@
 import * as THREE from '../vendor/three/three.module.js';
-import { PlanGraph, add, scale, normalize, perp, cross, dist, sub, dot, lineIntersect, decalageCorps, facesMur } from './core/topologie.js';
+import { PlanGraph, add, scale, normalize, perp, cross, dist, sub, dot, lineIntersect, segmentIntersect, decalageCorps, facesMur } from './core/topologie.js';
 import { snapOsnap, metresParPixel } from './core/osnap.js';
 import { Reperage, intersectionsApparentes, tangentesVersCercle } from './core/reperage.js';
 import { Brush, Evaluator, SUBTRACTION } from '../vendor/three/addons/csg/index.js';
@@ -287,12 +287,9 @@ class EtatMur extends Etat {
       this._drag = null;
       this._dragBouge = false;
       if (etaitClic) {
-        // clic sur un nœud : sélection (avec bascule additive si Maj)
-        this.b._selection = ev.shiftKey
-          ? (this.b._estSelectionne('node', id)
-              ? this.b._selection.filter(s => !(s.type === 'node' && s.id === id))
-              : [...this.b._selection, { type: 'node', id }])
-          : [{ type: 'node', id }];
+        // clic sur un nœud : Maj ajoute toujours, Ctrl/Cmd retire toujours
+        const mode = (ev.ctrlKey || ev.metaKey) ? 'remove' : (ev.shiftKey ? true : false);
+        this.b._appliquerSelection('node', id, mode);
         this.b._rafraichirApercu();
         this.b._reconstruireProxy();
       } else {
@@ -313,19 +310,17 @@ class EtatMur extends Etat {
         const a = this._marqueeStart;
         this._marqueeStart = null;
         this.b._majMarquee(null, null);
-        if (bouge && p) this.b._selectionFenetre(a, p, ev.shiftKey);
+        const mode = (ev.ctrlKey || ev.metaKey) ? 'remove' : (ev.shiftKey ? true : false);
+        if (bouge && p) this.b._selectionFenetre(a, p, mode);
         else this.b._finirSelection();
         return;
       }
-      // clic simple : sélection d'un mur (ou désélection)
+      // clic simple : sélection d'un mur — Maj ajoute toujours, Ctrl/Cmd retire toujours
       const tol = this.b._tolerancePixels(p, 20);
       const mur = this.b.graph.murSous(p, tol);
       if (mur) {
-        this.b._selection = ev.shiftKey
-          ? (this.b._estSelectionne('wall', mur.wallId)
-              ? this.b._selection.filter(s => !(s.type === 'wall' && s.id === mur.wallId))
-              : [...this.b._selection, { type: 'wall', id: mur.wallId }])
-          : [{ type: 'wall', id: mur.wallId }];
+        const mode = (ev.ctrlKey || ev.metaKey) ? 'remove' : (ev.shiftKey ? true : false);
+        this.b._appliquerSelection('wall', mur.wallId, mode);
       } else {
         this.b._finirSelection();
       }
@@ -1618,38 +1613,89 @@ export class Batiment {
 
   _majMarquee(a, b) {
     if (!a || !b) {
+      // _retirerApercu dispose le matériau courant (voir plus bas) : les deux
+      // matériaux plein/pointillé ne peuvent donc PAS survivre au-delà d'un
+      // geste — ils sont recréés avec le LineLoop lui-même, pas mis en cache
+      // à part, sans quoi le second geste réutiliserait un matériau détruit.
       this._marqueeApercu = this._retirerApercu(this._marqueeApercu);
+      this._marqueeMateriauPointille = null;
       return;
     }
     if (!this._marqueeApercu) {
+      this._marqueeMateriauPointille = new THREE.LineDashedMaterial({
+        color: 0x3d8bff, depthTest: false, transparent: true, dashSize: 0.16, gapSize: 0.1,
+      });
       this._marqueeApercu = new THREE.LineLoop(new THREE.BufferGeometry(),
         new THREE.LineBasicMaterial({ color: 0x3d8bff, depthTest: false, transparent: true }));
       this._marqueeApercu.renderOrder = 1002;
+      this._marqueeApercu.userData.materiauPlein = this._marqueeApercu.material;
       this._apercu.add(this._marqueeApercu);
     }
     const minX = Math.min(a.x, b.x), maxX = Math.max(a.x, b.x);
     const minY = Math.min(a.y, b.y), maxY = Math.max(a.y, b.y);
+    // b.x >= a.x : fenêtre (trait plein) ; b.x < a.x : recoupement (pointillé) —
+    // la même convention que Rhino, et que la sélection par fenêtre des items.
+    const pointille = b.x < a.x;
+    this._marqueeApercu.material = pointille ? this._marqueeMateriauPointille : this._marqueeApercu.userData.materiauPlein;
     this._marqueeApercu.geometry.dispose();
     this._marqueeApercu.geometry = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(minX, minY, 0.05), new THREE.Vector3(maxX, minY, 0.05),
       new THREE.Vector3(maxX, maxY, 0.05), new THREE.Vector3(minX, maxY, 0.05),
     ]);
+    // Les tirets d'un LineDashedMaterial n'apparaissent que si les distances
+    // le long de la ligne sont calculées APRÈS la pose de la géométrie.
+    if (pointille) this._marqueeApercu.computeLineDistances();
   }
 
-  /** Sélection par fenêtre : nœuds contenus + murs entièrement contenus. */
-  _selectionFenetre(a, b, additif = false) {
+  /** Sélection par fenêtre ou recoupement, selon le sens du glisser :
+   *  b.x >= a.x → fenêtre (murs ENTIÈREMENT dans le rectangle) ;
+   *  b.x < a.x  → recoupement (un nœud dedans, ou le mur traverse un bord).
+   *  `mode` : false = remplace, true = Maj (ajoute), 'remove' = Ctrl (retire). */
+  _selectionFenetre(a, b, mode = false) {
     const minX = Math.min(a.x, b.x), maxX = Math.max(a.x, b.x);
     const minY = Math.min(a.y, b.y), maxY = Math.max(a.y, b.y);
     const dans = (pt) => pt.x >= minX && pt.x <= maxX && pt.y >= minY && pt.y <= maxY;
-    const sel = additif ? [...this._selection] : [];
-    const ajout = (type, id) => { if (!sel.some(s => s.type === type && s.id === id)) sel.push({ type, id }); };
-    for (const n of this.graph.nodes.values()) if (dans(n)) ajout('node', n.id);
+    const recoupement = b.x < a.x;
+
+    if (mode === false) this._selection = [];   // remplacement : vidé une seule fois
+    let premier = true;
+    const appliquer = (type, id) => {
+      this._appliquerSelection(type, id, mode === false ? (premier ? false : true) : mode);
+      premier = false;
+    };
+
+    // Un nœud n'a pas de distinction fenêtre/recoupement : un point est
+    // dedans ou n'y est pas, il n'y a pas de « moitié dedans ».
+    for (const n of this.graph.nodes.values()) if (dans(n)) appliquer('node', n.id);
+
+    const cotes = [
+      [{ x: minX, y: minY }, { x: minX, y: maxY }],   // gauche
+      [{ x: maxX, y: minY }, { x: maxX, y: maxY }],   // droite
+      [{ x: minX, y: maxY }, { x: maxX, y: maxY }],   // haut
+      [{ x: minX, y: minY }, { x: maxX, y: minY }],   // bas
+    ];
     for (const w of this.graph.walls.values()) {
-      if (dans(this.graph.node(w.a)) && dans(this.graph.node(w.b))) ajout('wall', w.id);
+      const n1 = this.graph.node(w.a), n2 = this.graph.node(w.b);
+      let retenu = recoupement ? (dans(n1) || dans(n2)) : (dans(n1) && dans(n2));
+      if (recoupement && !retenu) {
+        for (const [r, s] of cotes) { if (segmentIntersect(n1, n2, r, s)) { retenu = true; break; } }
+      }
+      if (retenu) appliquer('wall', w.id);
     }
-    this._selection = sel;
+
     this._rafraichirApercu();
     this._reconstruireProxy();
+  }
+
+  /** Modifie this._selection : false = remplace par cet élément seul ;
+   *  true = Maj, ajoute s'il n'y est pas déjà (jamais de bascule) ;
+   *  'remove' = Ctrl/Cmd, retire s'il y est (jamais d'ajout). N'appelle PAS
+   *  _rafraichirApercu()/_reconstruireProxy() : à la charge de l'appelant,
+   *  comme avant cette méthode. */
+  _appliquerSelection(type, id, mode) {
+    if (mode === 'remove') this._selection = this._selection.filter(s => !(s.type === type && s.id === id));
+    else if (mode === true) { if (!this._estSelectionne(type, id)) this._selection.push({ type, id }); }
+    else this._selection = [{ type, id }];
   }
 
   /* ---- plan de coupe (vraie vue en plan) ---- */
