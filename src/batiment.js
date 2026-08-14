@@ -500,7 +500,17 @@ export class Batiment {
     this._initMarqueursSnap();
 
     this._ancre = null;
-    this._marqueurs = new Map();
+    /* Les marqueurs de noeuds vivent dans leur propre groupe, et non dans
+       une liste tenue a la main.
+
+       C'est la difference entre « on retire ce qu'on se souvient d'avoir
+       ajoute » et « on vide le tiroir ». L'anneau de selection etait ajoute
+       a l'apercu sans entrer dans la liste : il n'en sortait donc jamais, et
+       restait affiche a l'emplacement d'un point supprime. Un groupe qu'on
+       vide en entier ne peut pas avoir cet oubli. */
+    this._groupeNoeuds = new THREE.Group();
+    this._groupeNoeuds.renderOrder = 999;
+    this._apercu.add(this._groupeNoeuds);
     this._ligne = null;
     this._curseur = null;
     this._dimension = null;
@@ -595,6 +605,8 @@ export class Batiment {
     this._ancre = null;
     this._pointDepart = null;
     this._chaine = [];
+    // le point de depart d'un trait jamais confirme n'a plus de raison d'etre
+    if (this._purgerNoeudsOrphelins()) this._rafraichirApercu();
     this._ligne = this._retirerApercu(this._ligne);
   }
 
@@ -862,8 +874,7 @@ export class Batiment {
    *  Géométrie et matériaux PARTAGÉS : on ne crée rien par nœud, juste des
    *  Mesh qui référencent la même sphère (pas de GC pendant le déplacement). */
   _rafraichirApercu() {
-    for (const m of this._marqueurs.values()) this._apercu.remove(m);
-    this._marqueurs.clear();
+    for (const m of [...this._groupeNoeuds.children]) this._groupeNoeuds.remove(m);
     if (!this._geoMarqueur) {
       this._geoMarqueur = new THREE.SphereGeometry(1, 12, 8);
       this._matMarqueur = new THREE.MeshBasicMaterial({ color: 0xffb020, depthTest: false });
@@ -873,13 +884,20 @@ export class Batiment {
     }
     const r = Math.max(this.viewer.gridStep * 0.5, 0.05);
     for (const n of this.graph.nodes.values()) {
+      /* Un point d'edition n'a de sens qu'a l'extremite d'un mur.
+
+         Un noeud sans mur n'est rien qu'on puisse saisir ou deplacer : le
+         montrer promet une prise qui n'existe pas. Le cas se produit des
+         qu'un trace est commence puis abandonne — le point de depart est
+         pose avant le premier mur. On le garde dans le graphe, le temps du
+         trace, mais on ne le dessine pas. */
+      if (!n.wallIds.size) continue;
       const sel = this._estSelectionne('node', n.id);
       const m = new THREE.Mesh(this._geoMarqueur, sel ? this._matMarqueurSel : this._matMarqueur);
       m.scale.setScalar(sel ? r * 1.4 : r);
       m.position.set(n.x, n.y, 0.01);
       m.renderOrder = 999;
-      this._apercu.add(m);
-      this._marqueurs.set(n.id, m);
+      this._groupeNoeuds.add(m);
       if (sel) {
         // anneau vert autour du point sélectionné, bien visible
         const anneau = new THREE.Mesh(this._geoAnneau, this._matAnneau);
@@ -887,7 +905,7 @@ export class Batiment {
         anneau.position.set(n.x, n.y, 0.02);
         anneau.rotation.x = Math.PI / 2;
         anneau.renderOrder = 1000;
-        this._apercu.add(anneau);
+        this._groupeNoeuds.add(anneau);
       }
     }
   }
@@ -1278,6 +1296,21 @@ export class Batiment {
     this._rafraichirApercu();
     this._reconstruireProxy();
   }
+  /** Retire du graphe les noeuds qui ne tiennent plus aucun mur.
+   *
+   *  `graph.supprimerMur` le fait pour les deux extremites du mur qu'il
+   *  retire, mais `removeWall` non, et un trace abandonne laisse son point
+   *  de depart derriere lui. On epargne l'ancre et le point de depart : le
+   *  trace en cours a encore besoin d'eux. */
+  _purgerNoeudsOrphelins() {
+    const epargnes = new Set([this._ancre, this._pointDepart].filter(Boolean));
+    let n = 0;
+    for (const [id, noeud] of [...this.graph.nodes]) {
+      if (!noeud.wallIds.size && !epargnes.has(id)) { this.graph.nodes.delete(id); n++; }
+    }
+    return n;
+  }
+
   _supprimerSelection() {
     if (!this._selection.length) return;
     const noeuds = new Set();
@@ -1290,7 +1323,12 @@ export class Batiment {
       }
     }
     for (const nid of noeuds) this.graph.nodes.delete(nid);
+    /* Supprimer un mur laisse son autre extremite sans rien a tenir : sans
+       cette purge, chaque effacement sème un point isole de plus. */
+    this._purgerNoeudsOrphelins();
     this._selection = [];
+    this._murSel3D = null;
+    this._majPoignees();
     this._rafraichirApercu();
     this._reconstruireProxy();
     this._onChange();
@@ -1396,6 +1434,9 @@ export class Batiment {
   supprimerMur(wallId) {
     if (!this.graph.walls.has(wallId)) return false;
     this.graph.supprimerMur(wallId);
+    this._purgerNoeudsOrphelins();
+    if (this._murSel3D === wallId) { this._murSel3D = null; this._majPoignees(); }
+    this._rafraichirApercu();
     this.generer3D();
     this._onChange();
     return true;
@@ -1516,8 +1557,7 @@ export class Batiment {
     this._murSel3D = null;
     this._majPoignees();
     this._reconstruireProxy();
-    for (const m of this._marqueurs.values()) this._apercu.remove(m);
-    this._marqueurs.clear();
+    for (const m of [...this._groupeNoeuds.children]) this._groupeNoeuds.remove(m);
     this._ligne = this._retirerApercu(this._ligne);
     this._curseur = this._retirerApercu(this._curseur);
     this._formeApercu = this._retirerApercu(this._formeApercu);
