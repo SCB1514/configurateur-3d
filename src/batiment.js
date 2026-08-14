@@ -209,6 +209,13 @@ class EtatMur extends Etat {
     if (ev.button !== 0) return;
     ev.stopPropagation();
     ev.preventDefault();
+    if (ev.ctrlKey) {
+      // Ctrl+clic : acquisition manuelle du repere, jamais un point de mur —
+      // il ne faut pas que la meme main pose a la fois une reference et un
+      // sommet, sans quoi le trace se troue d'un point qu'on ne voulait pas.
+      this.b.basculerRepere(ev);
+      return;
+    }
     const p = this.b._solSous(ev);
     if (!p) return;
     if (this.b._modeEdition) {
@@ -590,7 +597,7 @@ export class Batiment {
   /** Active/désactive le système de GUIDES (repérage intelligent). */
   setGuides(on) {
     this.guides = !!on;
-    if (!on) this.reperage.vider();
+    if (!on) { this.reperage.vider(); this._rafraichirReperes(); }
     this.finirTrait();
     this._onStatut?.(null);
   }
@@ -642,6 +649,77 @@ export class Batiment {
    *    2. projection sur un mur (Sur-mur) et prolongation ;
    *    3. directions (ortho / parallèle / perpendiculaire) + longueur ;
    *    4. grille. */
+  /** Les directions remarquables portees par un point d'accrochage ou un
+   *  candidat de reperage — reutilise a la fois par le survol automatique
+   *  et par l'acquisition manuelle (Ctrl+clic), pour que les deux posent
+   *  exactement les memes rayons a partir du meme point. */
+  _directionsPour(s) {
+    if (!s) return [];
+    if (['end', 'mid', 'intersection'].includes(s.type)) {
+      if (s.type === 'mid' && s.wallId) {
+        /* Le milieu tient sa direction de SON mur, pas du voisinage : ce
+           n'est l'extremite d'aucun mur, la recherche ci-dessous ne le
+           trouverait pas. */
+        const w = this.graph.walls.get(s.wallId);
+        return w ? [this.graph.wallFrame(w).d] : [];
+      }
+      const dirs = [];
+      for (const w of this.graph.walls.values()) {
+        const A = this.graph.node(w.a), B = this.graph.node(w.b);
+        if (dist(s, A) < 1e-6 || dist(s, B) < 1e-6) dirs.push(this.graph.wallFrame(w).d);
+      }
+      return dirs;
+    }
+    // tangente / apparente / repere existant : la direction est deja portee
+    // par le candidat lui-meme, pas besoin de la redeviner depuis le graphe
+    if (s.lignes?.length) return s.lignes.map(l => l.d);
+    return [];
+  }
+
+  /** Pose ou retire manuellement une reference de reperage au point vise.
+   *
+   *  L'acquisition automatique demande d'attendre sur un point d'accrochage
+   *  reel — c'est volontaire, un survol n'est pas toujours une intention.
+   *  Mais un point qui n'existe dans aucun mur (un croisement de guides, un
+   *  point choisi a main levee) n'a pas d'accrochage a survoler, et attendre
+   *  n'aiderait de toute facon pas : Ctrl+clic pose la reference tout de
+   *  suite, sur EXACTEMENT le point vise par la cascade d'accrochage
+   *  courante — et un second Ctrl+clic pres d'une reference existante la
+   *  retire, pour que le controle reste dans les deux sens. */
+  basculerRepere(ev) {
+    const p = this._solSous(ev);
+    if (!p || !this.guides) return;
+    const tol = this._tolerancePixels(p, 15);
+    if (this.reperage.points.some(q => Math.hypot(q.x - p.x, q.y - p.y) < tol * 1.5)) {
+      this.reperage.oublier(p, tol * 1.5);
+    } else {
+      const s = this._snap(p, ev.shiftKey);
+      this.reperage.acquerir({ x: s.x, y: s.y }, this._directionsPour(s));
+    }
+    this._rafraichirReperes();
+    this.viewer.demanderImage(2);
+  }
+
+  /** Les marqueurs des references de reperage — verts, comme tout ce qui
+   *  releve de l'assistance au dessin dans cette application. */
+  _rafraichirReperes() {
+    if (!this._groupeReperes) {
+      this._groupeReperes = new THREE.Group();
+      this._groupeReperes.renderOrder = 997;
+      this._apercu.add(this._groupeReperes);
+      this._geoRepere = new THREE.SphereGeometry(1, 10, 6);
+      this._matRepere = new THREE.MeshBasicMaterial({ color: 0x3ecf8e, depthTest: false, transparent: true, opacity: 0.85 });
+    }
+    for (const m of [...this._groupeReperes.children]) this._groupeReperes.remove(m);
+    const r = Math.max(this.viewer.gridStep * 0.32, 0.03);
+    for (const q of this.reperage.points) {
+      const m = new THREE.Mesh(this._geoRepere, this._matRepere);
+      m.scale.setScalar(r);
+      m.position.set(q.x, q.y, 0.025);
+      this._groupeReperes.add(m);
+    }
+  }
+
   _snap(p, ortho = false) {
     const tol = this._tolerancePixels(p, 15);
     const os = snapOsnap(p, this.graph, tol);
@@ -652,32 +730,15 @@ export class Batiment {
        le retient comme reference. C'est le geste de SmartTrack : on ne
        declare rien, on regarde, et le logiciel comprend a quoi on pense. */
     this.reperage.actif = !!this.guides;
+    const avant = this.reperage.points.length;
     if (os && ['end', 'mid', 'intersection'].includes(os.type)) {
-      const dirs = [];
-      if (os.type === 'mid' && os.wallId) {
-        /* Le milieu tient sa direction de SON mur, pas du voisinage.
-
-           Un milieu n'est l'extremite d'aucun mur : la recherche par
-           extremites ci-dessous ne trouvait donc rien, et le point acquis
-           n'emettait aucun rayon — survoler un milieu ne donnait aucun
-           guide. Or c'est de tous les reperes celui dont la direction est
-           la moins ambigue : le segment qui le porte.
-
-           On donne la direction du mur, et `acquerir` en tire d'office la
-           perpendiculaire. C'est elle qu'on attend d'un milieu — la mediane
-           qui part d'aplomb du segment, celle de SmartTrack. */
-        const w = this.graph.walls.get(os.wallId);
-        if (w) dirs.push(this.graph.wallFrame(w).d);
-      } else {
-        for (const w of this.graph.walls.values()) {
-          const A = this.graph.node(w.a), B = this.graph.node(w.b);
-          if (dist(os, A) < 1e-6 || dist(os, B) < 1e-6) dirs.push(this.graph.wallFrame(w).d);
-        }
-      }
-      this.reperage.survol(os, dirs);
+      this.reperage.survol(os, this._directionsPour(os));
     } else {
       this.reperage.survol(null);
     }
+    // l'acquisition automatique change discretement l'ensemble des references :
+    // ne repeindre les marqueurs que quand ca arrive vraiment, pas a chaque survol
+    if (this.reperage.points.length !== avant) this._rafraichirReperes();
 
     /* Le repere passe APRES les points reels et AVANT les directions.
 
@@ -1567,6 +1628,8 @@ export class Batiment {
   vider() {
     this._nettoyer();
     this.graph = new PlanGraph();
+    this.reperage.vider();
+    this._rafraichirReperes();
     this._ancre = null;
     this._dernierMur = null;
     this._selection = [];

@@ -139,19 +139,21 @@ diff, six étaient faux après vérification dans le code.
 - **Sélection multiple** : le moteur a `_selection` avec gestion du Maj, mais
   un gizmo commun à plusieurs objets n'est pas vérifié.
 - **Rectangle de capture** : absent, et c'est le geste le plus attendu en plan.
-- **Repérage** : acquisition manuelle au Ctrl, perpendiculaires, réglages
-  exposés au panneau (ils existent dans le module). Les tangentes sont
-  faites — et elles ont demandé une exception à la règle de priorité :
-  un cercle est polygonisé en vingt-quatre murs, dont les sommets et les
-  milieux sont des points « réels » pour le graphe mais des artefacts pour
-  l'utilisateur. Le milieu d'un segment tombe à quatre centimètres du vrai
-  contact. La tangente passe donc AVANT les accrochages de points, à
-  tolérance réduite de moitié pour que l'exception ne déborde pas. Le cercle
-  idéal est retenu dans `batiment.cercles`, hors du graphe qui l'oublie.
-  Le survol d'un milieu émet maintenant sa propre direction (celle du mur
-  qui le porte) : la médiane perpendiculaire s'obtient des DEUX côtés du
-  segment, pas seulement du côté visé la première fois — un rayon de
-  repérage est une droite, pas une demi-droite.
+- **Repérage** : perpendiculaires et réglages exposés au panneau restent à
+  faire (ils existent dans le module). Tangentes, milieu-comme-référence et
+  acquisition manuelle sont faits. Les tangentes ont demandé une exception à
+  la règle de priorité : un cercle est polygonisé en vingt-quatre murs, dont
+  les sommets et les milieux sont des points « réels » pour le graphe mais
+  des artefacts pour l'utilisateur — le milieu d'un segment tombe à quatre
+  centimètres du vrai contact. La tangente passe donc AVANT les accrochages
+  de points, à tolérance réduite de moitié. Le cercle idéal est retenu dans
+  `batiment.cercles`, hors du graphe qui l'oublie. Le survol d'un milieu émet
+  sa propre direction (celle du mur qui le porte) : un rayon de repérage est
+  une droite, pas une demi-droite — corrigé pour marcher des deux côtés.
+  L'acquisition manuelle (Ctrl+clic) pose une référence n'importe où, sans
+  attendre le délai de survol, en réutilisant la même cascade d'accrochage
+  que le curseur ; un second Ctrl+clic à proximité la retire. Marqueurs
+  verts, cohérent avec tout le reste de l'assistance au dessin.
 - **Interface** : trois panneaux flottants qui se recouvrent. Les réunir en un
   panneau à onglets à droite.
 - **Ambiance « Intérieur »** : les quatre existantes éclairent comme un studio
